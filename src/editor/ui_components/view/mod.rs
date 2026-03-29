@@ -491,7 +491,8 @@ impl View {
     }
 
     fn snap_to_valid_line(&mut self) {
-        self.text_location.line_idx = min(self.text_location.line_idx, self.buffer.height());
+        let max_line = self.buffer.height().saturating_sub(1);
+        self.text_location.line_idx = min(self.text_location.line_idx, max_line);
     }
 
     fn scroll_vertically(&mut self, to: usize) {
