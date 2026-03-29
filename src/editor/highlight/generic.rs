@@ -1,10 +1,10 @@
 use super::Highlighter;
-use aho_corasick::AhoCorasick;
 use crate::editor::annotated_string::AnnotationType;
 use crate::editor::highlight::{
     HighlightAnnotation, HighlightState, LanguageConfig, StringType, load_language_config,
     merge_config,
 };
+use aho_corasick::AhoCorasick;
 
 pub struct GenericHighlighter {
     config: LanguageConfig,

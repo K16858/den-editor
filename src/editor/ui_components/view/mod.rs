@@ -80,7 +80,7 @@ impl View {
     const GUTTER_WIDTH: usize = 5;
     const GUTTER_PADDING: usize = 2;
 
-    fn screen_row_for_line(&self, line_idx: usize) -> Option<usize> {
+    fn _screen_row_for_line(&self, line_idx: usize) -> Option<usize> {
         let top = self.scroll_offset.row;
         if line_idx < top {
             return None;
