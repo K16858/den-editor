@@ -198,9 +198,10 @@ impl Buffer {
             self.modified = true;
         }
         if let Some(line) = self.lines.get_mut(from.line_idx) {
+            let start_byte = line.grapheme_to_byte_idx(from.grapheme_idx);
             let end_byte = line.grapheme_to_byte_idx(graphemes_to_drop);
-            if end_byte > 0 {
-                line.delete_byte_range(0..end_byte);
+            if start_byte < end_byte {
+                line.delete_byte_range(start_byte..end_byte);
                 self.modified = true;
             }
         }
