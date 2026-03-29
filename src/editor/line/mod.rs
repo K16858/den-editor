@@ -122,6 +122,15 @@ impl Line {
         self.fragments.len()
     }
 
+    /// Returns the leading whitespace (spaces and tabs) of the line as a string slice.
+    pub fn leading_whitespace(&self) -> &str {
+        let end = self
+            .string
+            .find(|c: char| c != ' ' && c != '\t')
+            .unwrap_or(self.string.len());
+        &self.string[..end]
+    }
+
     /// Returns the grapheme at the given index, for undo/redo recording.
     pub fn grapheme_at(&self, grapheme_idx: usize) -> Option<String> {
         self.fragments.get(grapheme_idx).map(|f| f.grapheme.clone())
