@@ -8,26 +8,26 @@ $ConfigDir   = Join-Path $env:APPDATA $BinaryName
 $ScriptDir   = $PSScriptRoot
 $DefaultCfg  = Join-Path $ScriptDir "docs\examples\default"
 
-# ── 前提確認 ────────────────────────────────────────────────────────────────
+# ── Prerequisites ────────────────────────────────────────────────────────────
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-    Write-Error "cargo が見つかりません。https://rustup.rs でインストールしてください。"
+    Write-Error "cargo not found. Install it from https://rustup.rs"
     exit 1
 }
 
-# ── ビルド ───────────────────────────────────────────────────────────────────
+# ── Build ────────────────────────────────────────────────────────────────────
 
 Write-Host "Building $BinaryName..."
 cargo build --release --manifest-path (Join-Path $ScriptDir "Cargo.toml")
 
-# ── バイナリのインストール ───────────────────────────────────────────────────
+# ── Install binary ───────────────────────────────────────────────────────────
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $BinaryPath = Join-Path $InstallDir "$BinaryName.exe"
 Copy-Item (Join-Path $ScriptDir "target\release\$BinaryName.exe") $BinaryPath -Force
 Write-Host "Installed: $BinaryPath"
 
-# ── PATH への追記 ────────────────────────────────────────────────────────────
+# ── Update PATH ──────────────────────────────────────────────────────────────
 
 $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($currentPath -notlike "*$InstallDir*") {
@@ -36,13 +36,13 @@ if ($currentPath -notlike "*$InstallDir*") {
         "$InstallDir;$currentPath",
         "User"
     )
-    Write-Host "PATH に追記しました: $InstallDir"
-    Write-Host "※ 新しいターミナルを開くと有効になります。"
+    Write-Host "Added to PATH: $InstallDir"
+    Write-Host "Restart your terminal for the change to take effect."
 } else {
-    Write-Host "PATH は既に設定済みです。"
+    Write-Host "PATH already contains: $InstallDir"
 }
 
-# ── 設定ファイルの配置 ───────────────────────────────────────────────────────
+# ── Install config files ─────────────────────────────────────────────────────
 
 New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir "languages") | Out-Null
 
@@ -60,7 +60,7 @@ Get-ChildItem (Join-Path $DefaultCfg "languages\*.toml") | ForEach-Object {
     Copy-IfMissing $_.FullName (Join-Path $ConfigDir "languages\$($_.Name)")
 }
 
-# ── 完了 ─────────────────────────────────────────────────────────────────────
+# ── Done ─────────────────────────────────────────────────────────────────────
 
 Write-Host ""
 Write-Host "Installation complete!"

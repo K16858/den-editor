@@ -7,26 +7,26 @@ CONFIG_DIR="$HOME/.config/$BINARY_NAME"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_CONFIG_DIR="$SCRIPT_DIR/docs/examples/default"
 
-# ── 前提確認 ────────────────────────────────────────────────────────────────
+# ── Prerequisites ────────────────────────────────────────────────────────────
 
 if ! command -v cargo &>/dev/null; then
-    echo "Error: cargo が見つかりません。https://rustup.rs でインストールしてください。" >&2
+    echo "Error: cargo not found. Install it from https://rustup.rs" >&2
     exit 1
 fi
 
-# ── ビルド ───────────────────────────────────────────────────────────────────
+# ── Build ────────────────────────────────────────────────────────────────────
 
 echo "Building $BINARY_NAME..."
 cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml"
 
-# ── バイナリのインストール ───────────────────────────────────────────────────
+# ── Install binary ───────────────────────────────────────────────────────────
 
 mkdir -p "$INSTALL_DIR"
 cp "$SCRIPT_DIR/target/release/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
 chmod +x "$INSTALL_DIR/$BINARY_NAME"
 echo "Installed: $INSTALL_DIR/$BINARY_NAME"
 
-# ── PATH への追記 ────────────────────────────────────────────────────────────
+# ── Update PATH ──────────────────────────────────────────────────────────────
 
 PATH_LINE="export PATH=\"\$HOME/.local/bin:\$PATH\""
 
@@ -35,7 +35,7 @@ add_to_shell_rc() {
     if [[ -f "$rc" ]]; then
         if ! grep -qF "$HOME/.local/bin" "$rc"; then
             printf '\n# den editor\n%s\n' "$PATH_LINE" >> "$rc"
-            echo "PATH を追記しました: $rc"
+            echo "Added to PATH: $rc"
         fi
     fi
 }
@@ -45,11 +45,11 @@ add_to_shell_rc "$HOME/.zshrc"
 
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo ""
-    echo "※ 新しいシェルを開くか、以下を実行してください:"
+    echo "Restart your shell or run:"
     echo "   $PATH_LINE"
 fi
 
-# ── 設定ファイルの配置 ───────────────────────────────────────────────────────
+# ── Install config files ─────────────────────────────────────────────────────
 
 mkdir -p "$CONFIG_DIR/languages"
 
@@ -69,7 +69,7 @@ for lang_file in "$DEFAULT_CONFIG_DIR/languages/"*.toml; do
     copy_if_missing "$lang_file" "$CONFIG_DIR/languages/$(basename "$lang_file")"
 done
 
-# ── 完了 ─────────────────────────────────────────────────────────────────────
+# ── Done ─────────────────────────────────────────────────────────────────────
 
 echo ""
 echo "Installation complete!"
