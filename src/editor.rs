@@ -267,7 +267,7 @@ impl Editor {
                 if count == 0 {
                     self.update_message("No matches found.");
                 } else {
-                    self.update_message(&format!("{count} 箇所を置換しました。"));
+                    self.update_message(&format!("Replaced {count} occurrence(s)."));
                 }
             }
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
