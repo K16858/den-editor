@@ -895,7 +895,7 @@ impl View {
             let text = self
                 .buffer
                 .content_deleted_at(at)
-                .unwrap_or_else(String::new);
+                .unwrap_or_default();
             self.buffer.delete(at);
             if self.buffer.is_file_loaded() && !text.is_empty() {
                 self.undo_history.push_edit(EditOp::Delete { at, text });
@@ -914,7 +914,7 @@ impl View {
         let text = self
             .buffer
             .content_deleted_at(at)
-            .unwrap_or_else(String::new);
+            .unwrap_or_default();
         self.buffer.delete(self.text_location);
         if self.buffer.is_file_loaded() && !text.is_empty() {
             self.undo_history.clear_redo();
