@@ -138,13 +138,12 @@ impl Buffer {
     /// (each `\n` advances to the next line, other chars advance `grapheme_idx`).
     fn location_after_text(from: Location, text: &str) -> Location {
         let mut at = from;
-        for ch in text.chars() {
-            if ch == '\n' {
+        for (idx, segment) in text.split('\n').enumerate() {
+            if idx > 0 {
                 at.line_idx += 1;
                 at.grapheme_idx = 0;
-            } else {
-                at.grapheme_idx += 1;
             }
+            at.grapheme_idx += segment.graphemes(true).count();
         }
         at
     }
