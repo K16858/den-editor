@@ -352,6 +352,8 @@ impl View {
             MoveDirection::WordRight => self.move_to_next_word_start(),
             MoveDirection::LineStart => self.move_to_start_of_line(),
             MoveDirection::LineEnd => self.move_to_end_of_line(),
+            MoveDirection::DocumentStart => self.move_to_start_of_document(),
+            MoveDirection::DocumentEnd => self.move_to_end_of_document(),
             MoveDirection::ScrollUp | MoveDirection::ScrollDown => {}
         }
 
@@ -416,6 +418,21 @@ impl View {
             .buffer
             .lines
             .get(self.text_location.line_idx)
+            .map_or(0, Line::grapheme_count);
+    }
+
+    fn move_to_start_of_document(&mut self) {
+        self.text_location.line_idx = 0;
+        self.text_location.grapheme_idx = 0;
+    }
+
+    fn move_to_end_of_document(&mut self) {
+        let last_line_idx = self.buffer.height().saturating_sub(1);
+        self.text_location.line_idx = last_line_idx;
+        self.text_location.grapheme_idx = self
+            .buffer
+            .lines
+            .get(last_line_idx)
             .map_or(0, Line::grapheme_count);
     }
 

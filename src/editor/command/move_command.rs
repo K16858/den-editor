@@ -19,6 +19,8 @@ pub enum MoveDirection {
     WordRight,
     LineStart,
     LineEnd,
+    DocumentStart,
+    DocumentEnd,
     Up,
     Left,
     Right,
@@ -61,6 +63,8 @@ impl TryFrom<KeyEvent> for Move {
             }
             (Left, KeyModifiers::CONTROL) => MoveDirection::WordLeft,
             (Right, KeyModifiers::CONTROL) => MoveDirection::WordRight,
+            (Home, m) if m.contains(KeyModifiers::CONTROL) => MoveDirection::DocumentStart,
+            (End, m) if m.contains(KeyModifiers::CONTROL) => MoveDirection::DocumentEnd,
             (Home, _) => MoveDirection::LineStart,
             (End, _) => MoveDirection::LineEnd,
             (Up, _) => MoveDirection::Up,
