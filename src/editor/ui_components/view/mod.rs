@@ -938,6 +938,29 @@ impl View {
         self.mark_redraw(true);
     }
 
+    /// Replaces all occurrences of `query` with `replacement`.
+    /// Returns the number of replacements made.
+    /// Note: this operation is not recorded in the undo history.
+    pub fn replace_all(&mut self, query: &str, replacement: &str) -> usize {
+        if query.is_empty() || !self.buffer.is_file_loaded() {
+            return 0;
+        }
+        let matches = self.buffer.find_all_matches(query);
+        let count = matches.len();
+        if count == 0 {
+            return 0;
+        }
+        self.undo_history.clear_redo();
+        // Replace from end to start to preserve indices of earlier matches.
+        for &at in matches.iter().rev() {
+            self.buffer.delete_span(at, query);
+            self.buffer.insert_string(at, replacement);
+        }
+        self.cache_version += 1;
+        self.mark_redraw(true);
+        count
+    }
+
     pub fn search(&mut self, query: &str) {
         if let Some(search_info) = &mut self.search_info {
             search_info.query = Some(Line::from(query));

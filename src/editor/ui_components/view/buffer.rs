@@ -2,6 +2,7 @@ use super::{FileInfo, Line, Location};
 use std::fs::{File, read_to_string};
 use std::io::Error;
 use std::io::Write;
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Default)]
 pub struct Buffer {
@@ -212,6 +213,33 @@ impl Buffer {
     pub fn delete_span(&mut self, from: Location, text: &str) {
         let to = Self::location_after_text(from, text);
         self.delete_range(from, to);
+    }
+
+    /// Returns all non-overlapping match locations from the beginning of the document,
+    /// in document order (top-to-bottom, left-to-right). Only single-line matches.
+    pub fn find_all_matches(&self, query: &str) -> Vec<Location> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let query_grapheme_count = query.graphemes(true).count();
+        let mut matches = Vec::new();
+        for (line_idx, line) in self.lines.iter().enumerate() {
+            let mut from_grapheme_idx = 0;
+            loop {
+                let Some(grapheme_idx) = line.search_forward(query, from_grapheme_idx) else {
+                    break;
+                };
+                matches.push(Location {
+                    line_idx,
+                    grapheme_idx,
+                });
+                from_grapheme_idx = grapheme_idx + query_grapheme_count.max(1);
+                if from_grapheme_idx >= line.grapheme_count() {
+                    break;
+                }
+            }
+        }
+        matches
     }
 
     pub fn search_forward(&self, query: &str, from: Location) -> Option<Location> {
