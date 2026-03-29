@@ -27,6 +27,29 @@ use undo::{EditOp, UndoHistory};
 
 type HighlightCache = HashMap<usize, (Vec<HighlightAnnotation>, HighlightState, u64)>;
 
+/// Pairs of opening and closing brackets/quotes for auto-close.
+/// TODO: move this to a configuration file so users can customize the pairs.
+const BRACKET_PAIRS: &[(char, char)] = &[
+    ('(', ')'),
+    ('[', ']'),
+    ('{', '}'),
+    ('"', '"'),
+    ('\'', '\''),
+];
+
+/// Returns the matching closing character for `ch` if it is an opening bracket.
+fn closing_bracket_for(ch: char) -> Option<char> {
+    BRACKET_PAIRS
+        .iter()
+        .find(|(open, _)| *open == ch)
+        .map(|(_, close)| *close)
+}
+
+/// Returns true if `ch` is a closing bracket defined in `BRACKET_PAIRS`.
+fn is_closing_bracket(ch: char) -> bool {
+    BRACKET_PAIRS.iter().any(|(_, close)| *close == ch)
+}
+
 #[derive(Default)]
 pub struct View {
     buffer: Buffer,
@@ -802,24 +825,58 @@ impl View {
     }
 
     fn insert_char(&mut self, character: char) {
+        // Selection wrapping: if text is selected and the character is an
+        // opening bracket, wrap the selection instead of replacing it.
+        if self.selection.is_some() {
+            if let Some(close) = closing_bracket_for(character) {
+                self.wrap_selection_with(character, close);
+                return;
+            }
+        }
+
         let _ = self.delete_selection();
+
+        // Closing bracket skip: if the cursor is already sitting before the
+        // same closing bracket, just move the cursor past it.
+        if is_closing_bracket(character) {
+            let loc = self.text_location;
+            let char_ahead = self
+                .buffer
+                .lines
+                .get(loc.line_idx)
+                .and_then(|l| l.grapheme_at(loc.grapheme_idx))
+                .and_then(|s| s.chars().next());
+            if char_ahead == Some(character) {
+                self.handle_move_command(Move::right(false));
+                return;
+            }
+        }
+
+        // Auto-close: insert both the opening and closing bracket as one unit.
+        let text_to_insert = if let Some(close) = closing_bracket_for(character) {
+            format!("{character}{close}")
+        } else {
+            character.to_string()
+        };
 
         let old_len = self
             .buffer
             .lines
             .get(self.text_location.line_idx)
             .map_or(0, Line::grapheme_count);
+
         if self.buffer.is_file_loaded() {
             self.undo_history.clear_redo();
             let at = self.text_location;
-            self.buffer.insert_char(character, self.text_location);
+            self.buffer.insert_string(at, &text_to_insert);
             self.undo_history.push_edit(EditOp::Insert {
                 at,
-                text: character.to_string(),
+                text: text_to_insert,
             });
         } else {
             self.buffer.insert_char(character, self.text_location);
         }
+
         let new_len = self
             .buffer
             .lines
@@ -827,6 +884,37 @@ impl View {
             .map_or(0, Line::grapheme_count);
         if new_len > old_len {
             self.handle_move_command(Move::right(false));
+        }
+        self.cache_version += 1;
+        self.mark_redraw(true);
+    }
+
+    /// Wraps the current selection with `open` and `close` characters.
+    /// The entire operation is recorded as two `EditOp`s (Delete + Insert) for atomic undo.
+    fn wrap_selection_with(&mut self, open: char, close: char) {
+        let Some(selection) = self.selection else {
+            return;
+        };
+        let normalized = selection.normalize();
+        let Some(selected_text) = self.selection_to_string(&normalized) else {
+            return;
+        };
+
+        let at = normalized.start;
+        let wrapped = format!("{open}{selected_text}{close}");
+
+        // Remove the selection first, then insert the wrapped version.
+        // The two ops on the undo stack will be undone in LIFO order:
+        // 1) undo the Insert (removes wrapped text, cursor back to `at`)
+        // 2) undo the Delete (restores selected text)
+        let _ = self.delete_selection(); // pushes a Delete op
+        if self.buffer.is_file_loaded() {
+            let new_loc = self.buffer.insert_string(at, &wrapped);
+            self.text_location = new_loc;
+            self.undo_history.push_edit(EditOp::Insert {
+                at,
+                text: wrapped,
+            });
         }
         self.cache_version += 1;
         self.mark_redraw(true);
