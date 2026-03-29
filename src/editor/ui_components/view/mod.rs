@@ -273,17 +273,25 @@ impl View {
     fn draw_welcome_message(at: usize) -> Result<(), Error> {
         let mut welcome_message = format!("{NAME} -- version {VERSION}");
         let width = Terminal::size().unwrap().width;
+        let gutter_total = Self::GUTTER_WIDTH + Self::GUTTER_PADDING;
+        let content_width = width.saturating_sub(gutter_total);
         let len = welcome_message.len();
-        let padding = (width - len) / 2;
-        let spaces = " ".repeat(padding - 1);
-        welcome_message = format!("~{spaces}{welcome_message}");
+        let prefix = " ".repeat(gutter_total);
+        if content_width > len {
+            let padding = (content_width - len) / 2;
+            let spaces = " ".repeat(padding.saturating_sub(1));
+            welcome_message = format!("{prefix}~{spaces}{welcome_message}");
+        } else {
+            welcome_message = format!("{prefix}{welcome_message}");
+        }
         welcome_message.truncate(width);
         Self::render_line(at, &welcome_message)?;
         Ok(())
     }
 
     fn draw_empty_row(at: usize) -> Result<(), Error> {
-        Self::render_line(at, "~")?;
+        let empty_prefix = " ".repeat(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
+        Self::render_line(at, &format!("{empty_prefix}~"))?;
         Ok(())
     }
 
