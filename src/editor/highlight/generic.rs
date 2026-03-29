@@ -389,53 +389,30 @@ impl Highlighter for GenericHighlighter {
             }
         };
 
-        // Keywords
-        for keyword in self.config.keywords.iter().map(std::string::String::as_str) {
-            let mut search_pos = 0;
-            while search_pos < line.len() {
-                if let Some(found_pos) = line[search_pos..].find(keyword) {
-                    let abs_pos = search_pos + found_pos;
-                    if find_keyword_at(line, keyword, abs_pos)
-                        && !is_in_string(abs_pos)
-                        && !is_in_comment(abs_pos)
-                    {
-                        annotations.push(HighlightAnnotation {
-                            start: abs_pos,
-                            end: abs_pos + keyword.len(),
-                            annotation_type: AnnotationType::Keyword,
-                        });
-                    }
-                    search_pos = abs_pos + 1;
+        // Keywords and primitive types — single Aho-Corasick pass
+        if let Some(ac) = &self.keyword_ac {
+            for mat in ac.find_iter(line) {
+                let abs_pos = mat.start();
+                let pattern_idx = mat.pattern().as_usize();
+                let word = if pattern_idx < self.keyword_count {
+                    self.config.keywords[pattern_idx].as_str()
                 } else {
-                    break;
-                }
-            }
-        }
-
-        // Primitive types
-        for prim_type in self
-            .config
-            .primitive_types
-            .iter()
-            .map(std::string::String::as_str)
-        {
-            let mut search_pos = 0;
-            while search_pos < line.len() {
-                if let Some(found_pos) = line[search_pos..].find(prim_type) {
-                    let abs_pos = search_pos + found_pos;
-                    if find_keyword_at(line, prim_type, abs_pos)
-                        && !is_in_string(abs_pos)
-                        && !is_in_comment(abs_pos)
-                    {
-                        annotations.push(HighlightAnnotation {
-                            start: abs_pos,
-                            end: abs_pos + prim_type.len(),
-                            annotation_type: AnnotationType::PrimitiveType,
-                        });
-                    }
-                    search_pos = abs_pos + 1;
-                } else {
-                    break;
+                    self.config.primitive_types[pattern_idx - self.keyword_count].as_str()
+                };
+                if find_keyword_at(line, word, abs_pos)
+                    && !is_in_string(abs_pos)
+                    && !is_in_comment(abs_pos)
+                {
+                    let annotation_type = if pattern_idx < self.keyword_count {
+                        AnnotationType::Keyword
+                    } else {
+                        AnnotationType::PrimitiveType
+                    };
+                    annotations.push(HighlightAnnotation {
+                        start: abs_pos,
+                        end: mat.end(),
+                        annotation_type,
+                    });
                 }
             }
         }
