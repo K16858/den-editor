@@ -1048,7 +1048,7 @@ impl UIComponent for View {
     }
 
     fn draw(&mut self, origin_y: usize) -> Result<(), Error> {
-        if self.buffer.is_empty() {
+        if self.buffer.is_empty() && !self.buffer.is_file_loaded() {
             self.render_welcome_screen(origin_y)
         } else {
             self.render_buffer(origin_y)
