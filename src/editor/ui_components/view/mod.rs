@@ -63,13 +63,13 @@ impl View {
     }
 
     fn render_welcome_screen(&self, origin_y: usize) -> Result<(), Error> {
-        let Size { height, .. } = self.size;
+        let Size { height, width } = self.size;
         let vertical_center = height / 3;
 
         for row in 0..height {
             let draw_row = origin_y + row;
             if row == vertical_center {
-                Self::draw_welcome_message(draw_row)?;
+                Self::draw_welcome_message_at(draw_row, width)?;
             } else {
                 Self::draw_empty_row(draw_row)?;
             }
@@ -270,9 +270,8 @@ impl View {
         Ok(())
     }
 
-    fn draw_welcome_message(at: usize) -> Result<(), Error> {
+    fn draw_welcome_message_at(at: usize, width: usize) -> Result<(), Error> {
         let mut welcome_message = format!("{NAME} -- version {VERSION}");
-        let width = Terminal::size().unwrap().width;
         let gutter_total = Self::GUTTER_WIDTH + Self::GUTTER_PADDING;
         let content_width = width.saturating_sub(gutter_total);
         let len = welcome_message.len();
