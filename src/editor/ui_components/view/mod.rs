@@ -894,8 +894,7 @@ impl View {
                 .buffer
                 .lines
                 .get(line_idx)
-                .map(|l| l.leading_whitespace())
-                .unwrap_or("");
+                .map_or("", Line::leading_whitespace);
             // Remove up to INDENT_WIDTH spaces from the start.
             let remove_count = leading
                 .chars()
@@ -916,10 +915,10 @@ impl View {
         }
         // Pull cursor left by however many spaces were removed on its line.
         let cursor_line_removed = ops.iter().find_map(|op| {
-            if let EditOp::Delete { at, text } = op {
-                if at.line_idx == self.text_location.line_idx {
-                    return Some(text.len());
-                }
+            if let EditOp::Delete { at, text } = op
+                && at.line_idx == self.text_location.line_idx
+            {
+                return Some(text.len());
             }
             None
         }).unwrap_or(0);
@@ -949,11 +948,11 @@ impl View {
     fn insert_char(&mut self, character: char) {
         // Selection wrapping: if text is selected and the character is an
         // opening bracket, wrap the selection instead of replacing it.
-        if self.selection.is_some() {
-            if let Some(close) = closing_bracket_for(character) {
-                self.wrap_selection_with(character, close);
-                return;
-            }
+        if self.selection.is_some()
+            && let Some(close) = closing_bracket_for(character)
+        {
+            self.wrap_selection_with(character, close);
+            return;
         }
 
         let _ = self.delete_selection();
