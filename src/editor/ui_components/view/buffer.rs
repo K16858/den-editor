@@ -230,8 +230,8 @@ impl Buffer {
                     break;
                 };
                 matches.push(Location {
-                    line_idx,
                     grapheme_idx,
+                    line_idx,
                 });
                 from_grapheme_idx = grapheme_idx + query_grapheme_count.max(1);
                 if from_grapheme_idx >= line.grapheme_count() {

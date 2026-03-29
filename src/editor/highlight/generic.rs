@@ -9,8 +9,8 @@ use aho_corasick::AhoCorasick;
 pub struct GenericHighlighter {
     config: LanguageConfig,
     language_name: String,
-    /// Precompiled automaton covering all keywords then all primitive_types.
-    /// Patterns 0..keyword_count are keywords; the rest are primitive types.
+    /// Precompiled automaton covering all keywords then all `primitive_types`.
+    /// Patterns `0..keyword_count` are keywords; the rest are primitive types.
     keyword_ac: Option<AhoCorasick>,
     keyword_count: usize,
 }
