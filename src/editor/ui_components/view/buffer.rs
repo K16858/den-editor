@@ -45,10 +45,7 @@ impl Buffer {
 
     pub fn save(&mut self) -> Result<(), Error> {
         if !self.file_info.has_path() {
-            return Err(Error::new(
-                std::io::ErrorKind::Other,
-                "No file path set",
-            ));
+            return Err(Error::other("No file path set"));
         }
         self.save_to_file(&self.file_info)?;
         self.modified = false;
@@ -138,7 +135,7 @@ impl Buffer {
     }
 
     /// Returns the location after "walking" from `from` over the characters in `text`
-    /// (each `\n` advances to the next line, other chars advance grapheme_idx).
+    /// (each `\n` advances to the next line, other chars advance `grapheme_idx`).
     fn location_after_text(from: Location, text: &str) -> Location {
         let mut at = from;
         for ch in text.chars() {
