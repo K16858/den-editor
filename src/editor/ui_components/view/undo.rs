@@ -4,6 +4,8 @@ use super::location::Location;
 pub enum EditOp {
     Insert { at: Location, text: String },
     Delete { at: Location, text: String },
+    /// Multiple ops that are undone/redone as a single unit.
+    Group(Vec<EditOp>),
 }
 
 #[derive(Default)]

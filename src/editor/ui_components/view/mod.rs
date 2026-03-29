@@ -752,6 +752,8 @@ impl View {
             Edit::SelectAll => self.select_all(),
             Edit::Undo => self.undo(),
             Edit::Redo => self.redo(),
+            Edit::IndentLine => self.indent_selection_or_line(),
+            Edit::DedentLine => self.dedent_selection_or_line(),
         }
         None
     }
@@ -771,6 +773,20 @@ impl View {
             }
             EditOp::Delete { at, text } => {
                 self.text_location = self.buffer.insert_string(*at, text);
+            }
+            EditOp::Group(ops) => {
+                for sub in ops.iter().rev() {
+                    match sub {
+                        EditOp::Insert { at, text } => {
+                            self.buffer.delete_span(*at, text);
+                            self.text_location = *at;
+                        }
+                        EditOp::Delete { at, text } => {
+                            self.text_location = self.buffer.insert_string(*at, text);
+                        }
+                        EditOp::Group(_) => {}
+                    }
+                }
             }
         }
         self.undo_history.push_redo(op);
@@ -794,6 +810,20 @@ impl View {
             EditOp::Delete { at, text } => {
                 self.buffer.delete_span(*at, text);
                 self.text_location = *at;
+            }
+            EditOp::Group(ops) => {
+                for sub in ops {
+                    match sub {
+                        EditOp::Insert { at, text } => {
+                            self.text_location = self.buffer.insert_string(*at, text);
+                        }
+                        EditOp::Delete { at, text } => {
+                            self.buffer.delete_span(*at, text);
+                            self.text_location = *at;
+                        }
+                        EditOp::Group(_) => {}
+                    }
+                }
             }
         }
         self.undo_history.push_edit(op);
@@ -822,6 +852,14 @@ impl View {
             },
         ));
         self.mark_redraw(true);
+    }
+
+    fn indent_selection_or_line(&mut self) {
+        // TODO: 実装予定
+    }
+
+    fn dedent_selection_or_line(&mut self) {
+        // TODO: 実装予定
     }
 
     fn insert_char(&mut self, character: char) {
