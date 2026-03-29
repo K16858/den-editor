@@ -834,18 +834,28 @@ impl View {
     fn insert_newline(&mut self) {
         let _ = self.delete_selection();
 
+        let indent = self
+            .buffer
+            .lines
+            .get(self.text_location.line_idx)
+            .map(|line| line.leading_whitespace().to_string())
+            .unwrap_or_default();
+        let insert_text = format!("\n{indent}");
+
         if self.buffer.is_file_loaded() {
             self.undo_history.clear_redo();
             let at = self.text_location;
-            self.buffer.insert_newline(self.text_location);
+            let new_loc = self.buffer.insert_string(at, &insert_text);
+            self.text_location = new_loc;
             self.undo_history.push_edit(EditOp::Insert {
                 at,
-                text: "\n".to_string(),
+                text: insert_text,
             });
         } else {
             self.buffer.insert_newline(self.text_location);
+            self.handle_move_command(Move::right(false));
         }
-        self.handle_move_command(Move::right(false));
+        self.scroll_text_location_into_view();
         self.cache_version += 1;
         self.mark_redraw(true);
     }
