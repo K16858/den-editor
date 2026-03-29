@@ -628,20 +628,10 @@ impl View {
             return false;
         }
 
-        let mut ranges = normalized.get_ranges(&self.buffer);
-        if ranges.is_empty() {
-            return false;
-        }
-
         let at = normalized.start;
         let deleted_text = self.selection_to_string(&normalized);
-        ranges.sort_by(|(a_idx, _), (b_idx, _)| b_idx.cmp(a_idx));
 
-        for (line_idx, byte_range) in ranges {
-            if let Some(line) = self.buffer.lines.get_mut(line_idx) {
-                line.delete_byte_range(byte_range);
-            }
-        }
+        self.buffer.delete_range(normalized.start, normalized.end);
 
         self.text_location = at;
         self.selection = None;
