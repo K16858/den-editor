@@ -793,6 +793,9 @@ impl View {
     }
 
     fn select_all(&mut self) {
+        if self.buffer.is_empty() {
+            return;
+        }
         let last_line = self.buffer.height().saturating_sub(1);
         self.selection = Some(Selection::new(
             Location {
