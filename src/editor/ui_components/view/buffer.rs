@@ -111,10 +111,13 @@ impl Buffer {
                 at.line_idx += 1;
                 at.grapheme_idx = 0;
             }
+            let base = at.grapheme_idx;
             for ch in line_text.chars() {
                 self.insert_char(ch, at);
                 at.grapheme_idx += 1;
             }
+            // Correct grapheme_idx for multi-codepoint grapheme clusters.
+            at.grapheme_idx = base + line_text.graphemes(true).count();
         }
         at
     }
