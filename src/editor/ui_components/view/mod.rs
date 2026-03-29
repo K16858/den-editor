@@ -667,23 +667,23 @@ impl View {
         Some(result)
     }
 
-    fn copy_selection(&mut self) {
+    fn copy_selection(&mut self) -> Result<(), &'static str> {
         let Some(selection) = self.selection else {
-            return;
+            return Ok(());
         };
-
         let Some(text) = self.selection_to_string(&selection) else {
-            return;
+            return Ok(());
         };
-
-        if let Ok(mut clipboard) = Clipboard::new() {
-            let _ = clipboard.set_text(text);
-        }
+        Clipboard::new()
+            .map_err(|_| "Clipboard unavailable")?
+            .set_text(text)
+            .map_err(|_| "Failed to copy to clipboard")
     }
 
-    fn cut_selection(&mut self) {
-        self.copy_selection();
+    fn cut_selection(&mut self) -> Result<(), &'static str> {
+        let result = self.copy_selection();
         let _ = self.delete_selection();
+        result
     }
 
     /// Inserts the given text at the current cursor (or replaces selection).
@@ -719,31 +719,30 @@ impl View {
         self.mark_redraw(true);
     }
 
-    fn paste_clipboard(&mut self) {
-        let Ok(mut clipboard) = Clipboard::new() else {
-            return;
-        };
-
-        let Ok(text) = clipboard.get_text() else {
-            return;
-        };
-
+    fn paste_clipboard(&mut self) -> Result<(), &'static str> {
+        let text = Clipboard::new()
+            .map_err(|_| "Clipboard unavailable")?
+            .get_text()
+            .map_err(|_| "Failed to paste from clipboard")?;
         self.paste_text(&text);
+        Ok(())
     }
 
-    pub fn handle_edit_command(&mut self, command: Edit) {
+    /// Returns an error message string if a clipboard operation failed, otherwise `None`.
+    pub fn handle_edit_command(&mut self, command: Edit) -> Option<&'static str> {
         match command {
             Edit::Insert(character) => self.insert_char(character),
             Edit::InsertNewline => self.insert_newline(),
             Edit::Backspace => self.backspace(),
             Edit::Delete => self.delete(),
-            Edit::Copy => self.copy_selection(),
-            Edit::Cut => self.cut_selection(),
-            Edit::Paste => self.paste_clipboard(),
+            Edit::Copy => return self.copy_selection().err(),
+            Edit::Cut => return self.cut_selection().err(),
+            Edit::Paste => return self.paste_clipboard().err(),
             Edit::SelectAll => self.select_all(),
             Edit::Undo => self.undo(),
             Edit::Redo => self.redo(),
         }
+        None
     }
 
     pub fn undo(&mut self) {

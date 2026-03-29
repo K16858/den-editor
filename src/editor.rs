@@ -162,7 +162,11 @@ impl Editor {
             System(Search) => self.set_prompt(PromptType::Search),
             System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
             System(Save) => self.handle_save(),
-            Edit(edit_command) => self.view.handle_edit_command(edit_command),
+            Edit(edit_command) => {
+                if let Some(err) = self.view.handle_edit_command(edit_command) {
+                    self.update_message(err);
+                }
+            }
 
             Move(move_command) => self.view.handle_move_command(move_command),
         }
