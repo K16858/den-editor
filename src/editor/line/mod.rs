@@ -352,23 +352,6 @@ impl Line {
         self.string.len()
     }
 
-    #[allow(dead_code)]
-    pub fn is_whitespace_at(&self, grapheme_idx: usize) -> bool {
-        self.fragments
-            .get(grapheme_idx)
-            .is_some_and(|f| f.grapheme.chars().all(char::is_whitespace))
-    }
-
-    /// Returns true if the grapheme at `grapheme_idx` is a word delimiter (whitespace, `,`, `;`, newline).
-    #[allow(dead_code)]
-    pub fn is_word_delimiter_at(&self, grapheme_idx: usize) -> bool {
-        self.fragments.get(grapheme_idx).is_some_and(|f| {
-            f.grapheme
-                .chars()
-                .all(|c| c.is_whitespace() || c == ',' || c == ';' || c == '\n' || c == '\r')
-        })
-    }
-
     /// Word for Ctrl+Left/Right: identifier (alphanumeric + `_`) or angle-bracket block `<`..`>`.
     fn is_identifier_at(&self, grapheme_idx: usize) -> bool {
         self.fragments
@@ -439,17 +422,6 @@ impl Line {
             }
             Some(idx)
         }
-    }
-
-    /// Returns the grapheme index of the start of the next word. Kept for compatibility (e.g. next-line first word).
-    #[allow(dead_code)]
-    pub fn next_word_start(&self, grapheme_idx: usize) -> Option<usize> {
-        let len = self.grapheme_count();
-        let mut idx = grapheme_idx;
-        while idx < len && self.is_skip_at(idx) {
-            idx += 1;
-        }
-        if idx < len { Some(idx) } else { None }
     }
 
     pub fn search_forward(&self, query: &str, from_grapheme_idx: usize) -> Option<usize> {

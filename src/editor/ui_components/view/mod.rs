@@ -80,18 +80,6 @@ impl View {
     const GUTTER_WIDTH: usize = 5;
     const GUTTER_PADDING: usize = 2;
 
-    fn _screen_row_for_line(&self, line_idx: usize) -> Option<usize> {
-        let top = self.scroll_offset.row;
-        if line_idx < top {
-            return None;
-        }
-        let relative = line_idx.saturating_sub(top);
-        if relative >= self.size.height {
-            return None;
-        }
-        Some(relative)
-    }
-
     #[allow(clippy::too_many_lines)]
     fn render_buffer(&mut self, origin_y: usize) -> Result<(), Error> {
         let Size { height, width } = self.size;

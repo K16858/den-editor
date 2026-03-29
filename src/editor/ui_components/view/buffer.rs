@@ -122,14 +122,6 @@ impl Buffer {
         at
     }
 
-    /// Returns the single grapheme at the given location, for undo/redo recording.
-    #[allow(dead_code)]
-    pub fn content_at(&self, loc: Location) -> Option<String> {
-        self.lines
-            .get(loc.line_idx)
-            .and_then(|line| line.grapheme_at(loc.grapheme_idx))
-    }
-
     /// Returns the content that would be deleted by `delete(loc)` (grapheme or newline).
     pub fn content_deleted_at(&self, loc: Location) -> Option<String> {
         if let Some(line) = self.lines.get(loc.line_idx) {

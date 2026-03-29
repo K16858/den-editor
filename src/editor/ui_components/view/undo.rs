@@ -13,11 +13,6 @@ pub struct UndoHistory {
 }
 
 impl UndoHistory {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn push_edit(&mut self, op: EditOp) {
         self.undo_stack.push(op);
     }
