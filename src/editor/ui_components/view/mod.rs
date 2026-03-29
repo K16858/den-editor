@@ -866,9 +866,13 @@ impl View {
         let op = if ops.len() == 1 { ops.remove(0) } else { EditOp::Group(ops) };
         self.undo_history.push_edit(op);
 
-        // Shift cursor right by indent width if we indented the cursor's line.
+        // Shift cursor and selection right by indent width.
         self.text_location.grapheme_idx =
             self.text_location.grapheme_idx.saturating_add(Self::INDENT.len());
+        if let Some(sel) = &mut self.selection {
+            sel.start.grapheme_idx = sel.start.grapheme_idx.saturating_add(Self::INDENT.len());
+            sel.end.grapheme_idx = sel.end.grapheme_idx.saturating_add(Self::INDENT.len());
+        }
         self.buffer.modified = true;
         self.cache_version += 1;
         self.mark_redraw(true);
