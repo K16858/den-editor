@@ -1,4 +1,5 @@
 use super::Highlighter;
+use aho_corasick::AhoCorasick;
 use crate::editor::annotated_string::AnnotationType;
 use crate::editor::highlight::{
     HighlightAnnotation, HighlightState, LanguageConfig, StringType, load_language_config,
@@ -8,6 +9,10 @@ use crate::editor::highlight::{
 pub struct GenericHighlighter {
     config: LanguageConfig,
     language_name: String,
+    /// Precompiled automaton covering all keywords then all primitive_types.
+    /// Patterns 0..keyword_count are keywords; the rest are primitive types.
+    keyword_ac: Option<AhoCorasick>,
+    keyword_count: usize,
 }
 
 impl GenericHighlighter {
@@ -48,9 +53,24 @@ impl GenericHighlighter {
             }
         };
 
+        let keyword_count = config.keywords.len();
+        let all_patterns: Vec<&str> = config
+            .keywords
+            .iter()
+            .chain(config.primitive_types.iter())
+            .map(String::as_str)
+            .collect();
+        let keyword_ac = if all_patterns.is_empty() {
+            None
+        } else {
+            AhoCorasick::new(&all_patterns).ok()
+        };
+
         Some(Self {
             config,
             language_name: language.to_string(),
+            keyword_ac,
+            keyword_count,
         })
     }
 }
