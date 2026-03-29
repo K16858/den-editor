@@ -417,10 +417,10 @@ impl Highlighter for GenericHighlighter {
             }
         }
 
-        // Numbers
-        let mut chars = line.chars().enumerate().peekable();
-        while let Some((idx, ch)) = chars.next() {
-            if is_in_string(idx) || is_in_comment(idx) {
+        // Numbers — use char_indices() for byte offsets
+        let mut chars = line.char_indices().peekable();
+        while let Some((byte_idx, ch)) = chars.next() {
+            if is_in_string(byte_idx) || is_in_comment(byte_idx) {
                 continue;
             }
 
@@ -430,21 +430,21 @@ impl Highlighter for GenericHighlighter {
                         *next_ch == 'x' || *next_ch == 'b' || *next_ch == 'o'
                     }))
             {
-                let start = idx;
-                let mut end = idx + 1;
+                let start = byte_idx;
+                let mut end = byte_idx + ch.len_utf8();
 
                 if ch == '0'
-                    && let Some((_, next_ch)) = chars.peek()
-                    && (*next_ch == 'x' || *next_ch == 'b' || *next_ch == 'o')
+                    && let Some(&(_, next_ch)) = chars.peek()
+                    && (next_ch == 'x' || next_ch == 'b' || next_ch == 'o')
                 {
                     chars.next();
-                    end += 1;
+                    end += 1; // 'x', 'b', 'o' are ASCII
                 }
 
-                while let Some(&(_, next_ch)) = chars.peek() {
+                while let Some(&(next_byte_idx, next_ch)) = chars.peek() {
                     if next_ch.is_alphanumeric() || next_ch == '_' || next_ch == '.' {
                         chars.next();
-                        end += 1;
+                        end = next_byte_idx + next_ch.len_utf8();
                     } else {
                         break;
                     }
@@ -512,98 +512,92 @@ impl Highlighter for GenericHighlighter {
             prev_char = Some(ch);
         }
 
-        // Brackets
+        // Brackets — use char_indices() for byte offsets
         let mut paren_level = state.paren_level;
         let mut brace_level = state.brace_level;
         let mut bracket_level = state.bracket_level;
 
-        for (idx, ch) in line.chars().enumerate() {
-            if is_in_string(idx) || is_in_comment(idx) {
+        for (byte_idx, ch) in line.char_indices() {
+            if is_in_string(byte_idx) || is_in_comment(byte_idx) {
                 continue;
             }
 
             if ch == '(' {
-                let color_index = paren_level % 4;
-                let annotation_type = match color_index {
-                    0 => AnnotationType::Bracket0,
-                    1 => AnnotationType::Bracket1,
-                    2 => AnnotationType::Bracket2,
-                    _ => AnnotationType::Bracket3,
-                };
+                let annotation_type = [
+                    AnnotationType::Bracket0,
+                    AnnotationType::Bracket1,
+                    AnnotationType::Bracket2,
+                    AnnotationType::Bracket3,
+                ][paren_level % 4];
                 annotations.push(HighlightAnnotation {
-                    start: idx,
-                    end: idx + 1,
+                    start: byte_idx,
+                    end: byte_idx + 1,
                     annotation_type,
                 });
                 paren_level += 1;
             } else if ch == ')' {
                 paren_level = paren_level.saturating_sub(1);
-                let color_index = paren_level % 4;
-                let annotation_type = match color_index {
-                    0 => AnnotationType::Bracket0,
-                    1 => AnnotationType::Bracket1,
-                    2 => AnnotationType::Bracket2,
-                    _ => AnnotationType::Bracket3,
-                };
+                let annotation_type = [
+                    AnnotationType::Bracket0,
+                    AnnotationType::Bracket1,
+                    AnnotationType::Bracket2,
+                    AnnotationType::Bracket3,
+                ][paren_level % 4];
                 annotations.push(HighlightAnnotation {
-                    start: idx,
-                    end: idx + 1,
+                    start: byte_idx,
+                    end: byte_idx + 1,
                     annotation_type,
                 });
             } else if ch == '{' {
-                let color_index = (brace_level + 1) % 4;
-                let annotation_type = match color_index {
-                    0 => AnnotationType::Bracket0,
-                    1 => AnnotationType::Bracket1,
-                    2 => AnnotationType::Bracket2,
-                    _ => AnnotationType::Bracket3,
-                };
+                let annotation_type = [
+                    AnnotationType::Bracket0,
+                    AnnotationType::Bracket1,
+                    AnnotationType::Bracket2,
+                    AnnotationType::Bracket3,
+                ][(brace_level + 1) % 4];
                 annotations.push(HighlightAnnotation {
-                    start: idx,
-                    end: idx + 1,
+                    start: byte_idx,
+                    end: byte_idx + 1,
                     annotation_type,
                 });
                 brace_level += 1;
             } else if ch == '}' {
                 brace_level = brace_level.saturating_sub(1);
-                let color_index = (brace_level + 1) % 4;
-                let annotation_type = match color_index {
-                    0 => AnnotationType::Bracket0,
-                    1 => AnnotationType::Bracket1,
-                    2 => AnnotationType::Bracket2,
-                    _ => AnnotationType::Bracket3,
-                };
+                let annotation_type = [
+                    AnnotationType::Bracket0,
+                    AnnotationType::Bracket1,
+                    AnnotationType::Bracket2,
+                    AnnotationType::Bracket3,
+                ][(brace_level + 1) % 4];
                 annotations.push(HighlightAnnotation {
-                    start: idx,
-                    end: idx + 1,
+                    start: byte_idx,
+                    end: byte_idx + 1,
                     annotation_type,
                 });
             } else if ch == '[' {
-                let color_index = (bracket_level + 2) % 4;
-                let annotation_type = match color_index {
-                    0 => AnnotationType::Bracket0,
-                    1 => AnnotationType::Bracket1,
-                    2 => AnnotationType::Bracket2,
-                    _ => AnnotationType::Bracket3,
-                };
+                let annotation_type = [
+                    AnnotationType::Bracket0,
+                    AnnotationType::Bracket1,
+                    AnnotationType::Bracket2,
+                    AnnotationType::Bracket3,
+                ][(bracket_level + 2) % 4];
                 annotations.push(HighlightAnnotation {
-                    start: idx,
-                    end: idx + 1,
+                    start: byte_idx,
+                    end: byte_idx + 1,
                     annotation_type,
                 });
                 bracket_level += 1;
             } else if ch == ']' {
                 bracket_level = bracket_level.saturating_sub(1);
-                let color_index = (bracket_level + 2) % 4;
-                let annotation_type = match color_index {
-                    0 => AnnotationType::Bracket0,
-                    1 => AnnotationType::Bracket1,
-                    2 => AnnotationType::Bracket2,
-                    _ => AnnotationType::Bracket3,
-                };
+                let annotation_type = [
+                    AnnotationType::Bracket0,
+                    AnnotationType::Bracket1,
+                    AnnotationType::Bracket2,
+                    AnnotationType::Bracket3,
+                ][(bracket_level + 2) % 4];
                 annotations.push(HighlightAnnotation {
-                    start: idx,
-                    end: idx + 1,
+                    start: byte_idx,
+                    end: byte_idx + 1,
                     annotation_type,
                 });
             }
