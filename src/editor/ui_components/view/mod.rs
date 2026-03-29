@@ -513,12 +513,15 @@ impl View {
     }
 
     fn scroll_horizontally(&mut self, to: usize) {
-        let Size { width, .. } = self.size;
+        let content_width = self
+            .size
+            .width
+            .saturating_sub(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
         let offset_changed = if to < self.scroll_offset.col {
             self.scroll_offset.col = to;
             true
-        } else if to >= self.scroll_offset.col.saturating_add(width) {
-            self.scroll_offset.col = to.saturating_sub(width).saturating_add(1);
+        } else if to >= self.scroll_offset.col.saturating_add(content_width) {
+            self.scroll_offset.col = to.saturating_sub(content_width).saturating_add(1);
             true
         } else {
             false
@@ -1036,9 +1039,10 @@ impl View {
 
     fn center_text_location(&mut self) {
         let Size { height, width } = self.size;
+        let content_width = width.saturating_sub(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
         let Position { row, col } = self.text_location_to_position();
         let vertical_mid = height.div_ceil(2);
-        let horizontal_mid = width.div_ceil(2);
+        let horizontal_mid = content_width.div_ceil(2);
         self.scroll_offset.row = row.saturating_sub(vertical_mid);
         self.scroll_offset.col = col.saturating_sub(horizontal_mid);
         self.mark_redraw(true);
