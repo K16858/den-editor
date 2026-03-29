@@ -649,23 +649,39 @@ impl View {
     }
 
     fn selection_to_string(&self, selection: &Selection) -> Option<String> {
-        let ranges = selection.get_ranges(&self.buffer);
-        if ranges.is_empty() {
+        let normalized = selection.normalize();
+        if normalized.is_empty() {
             return None;
         }
 
+        let start = normalized.start;
+        let end = normalized.end;
         let mut result = String::new();
-        for (idx, (line_idx, byte_range)) in ranges.iter().enumerate() {
-            if let Some(line) = self.buffer.lines.get(*line_idx) {
-                let slice = &line[byte_range.clone()];
-                result.push_str(slice);
-                if idx + 1 < ranges.len() {
-                    result.push('\n');
-                }
+
+        for line_idx in start.line_idx..=end.line_idx {
+            if line_idx > start.line_idx {
+                result.push('\n');
+            }
+            if let Some(line) = self.buffer.lines.get(line_idx) {
+                let start_byte = if line_idx == start.line_idx {
+                    line.grapheme_to_byte_idx(start.grapheme_idx)
+                } else {
+                    0
+                };
+                let end_byte = if line_idx == end.line_idx {
+                    line.grapheme_to_byte_idx(end.grapheme_idx)
+                } else {
+                    line.line_length()
+                };
+                result.push_str(&line[start_byte..end_byte]);
             }
         }
 
-        Some(result)
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
     }
 
     fn copy_selection(&mut self) -> Result<(), &'static str> {
