@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BINARY_NAME="den"
+INSTALL_DIR="$HOME/.local/bin"
+CONFIG_DIR="$HOME/.config/$BINARY_NAME"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_CONFIG_DIR="$SCRIPT_DIR/docs/examples/default"
+
+# ── 前提確認 ────────────────────────────────────────────────────────────────
+
+if ! command -v cargo &>/dev/null; then
+    echo "Error: cargo が見つかりません。https://rustup.rs でインストールしてください。" >&2
+    exit 1
+fi
+
+# ── ビルド ───────────────────────────────────────────────────────────────────
+
+echo "Building $BINARY_NAME..."
+cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml"
+
+# ── バイナリのインストール ───────────────────────────────────────────────────
+
+mkdir -p "$INSTALL_DIR"
+cp "$SCRIPT_DIR/target/release/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
+chmod +x "$INSTALL_DIR/$BINARY_NAME"
+echo "Installed: $INSTALL_DIR/$BINARY_NAME"
+
+# ── PATH への追記 ────────────────────────────────────────────────────────────
+
+PATH_LINE="export PATH=\"\$HOME/.local/bin:\$PATH\""
+
+add_to_shell_rc() {
+    local rc="$1"
+    if [[ -f "$rc" ]]; then
+        if ! grep -qF "$HOME/.local/bin" "$rc"; then
+            printf '\n# den editor\n%s\n' "$PATH_LINE" >> "$rc"
+            echo "PATH を追記しました: $rc"
+        fi
+    fi
+}
+
+add_to_shell_rc "$HOME/.bashrc"
+add_to_shell_rc "$HOME/.zshrc"
+
+if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+    echo ""
+    echo "※ 新しいシェルを開くか、以下を実行してください:"
+    echo "   $PATH_LINE"
+fi
+
+# ── 設定ファイルの配置 ───────────────────────────────────────────────────────
+
+mkdir -p "$CONFIG_DIR/languages"
+
+copy_if_missing() {
+    local src="$1"
+    local dst="$2"
+    if [[ ! -f "$dst" ]]; then
+        cp "$src" "$dst"
+        echo "Created: $dst"
+    fi
+}
+
+copy_if_missing "$DEFAULT_CONFIG_DIR/colors.toml" "$CONFIG_DIR/colors.toml"
+
+for lang_file in "$DEFAULT_CONFIG_DIR/languages/"*.toml; do
+    [[ -f "$lang_file" ]] || continue
+    copy_if_missing "$lang_file" "$CONFIG_DIR/languages/$(basename "$lang_file")"
+done
+
+# ── 完了 ─────────────────────────────────────────────────────────────────────
+
+echo ""
+echo "Installation complete!"
+echo "  Binary : $INSTALL_DIR/$BINARY_NAME"
+echo "  Config : $CONFIG_DIR"
