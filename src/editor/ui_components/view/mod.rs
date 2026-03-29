@@ -854,12 +854,96 @@ impl View {
         self.mark_redraw(true);
     }
 
+    const INDENT: &'static str = "    "; // 4 spaces; TODO: make configurable
+
     fn indent_selection_or_line(&mut self) {
-        // TODO: 実装予定
+        if !self.buffer.is_file_loaded() {
+            return;
+        }
+        let line_range = self.selected_line_range();
+        self.undo_history.clear_redo();
+
+        let mut ops: Vec<EditOp> = Vec::new();
+        for line_idx in line_range {
+            let at = Location { grapheme_idx: 0, line_idx };
+            self.buffer.insert_string(at, Self::INDENT);
+            ops.push(EditOp::Insert { at, text: Self::INDENT.to_string() });
+        }
+
+        let op = if ops.len() == 1 { ops.remove(0) } else { EditOp::Group(ops) };
+        self.undo_history.push_edit(op);
+
+        // Shift cursor right by indent width if we indented the cursor's line.
+        self.text_location.grapheme_idx =
+            self.text_location.grapheme_idx.saturating_add(Self::INDENT.len());
+        self.buffer.modified = true;
+        self.cache_version += 1;
+        self.mark_redraw(true);
     }
 
     fn dedent_selection_or_line(&mut self) {
-        // TODO: 実装予定
+        if !self.buffer.is_file_loaded() {
+            return;
+        }
+        let line_range = self.selected_line_range();
+        self.undo_history.clear_redo();
+
+        let mut ops: Vec<EditOp> = Vec::new();
+        for line_idx in line_range {
+            let leading = self
+                .buffer
+                .lines
+                .get(line_idx)
+                .map(|l| l.leading_whitespace())
+                .unwrap_or("");
+            // Remove up to INDENT_WIDTH spaces from the start.
+            let remove_count = leading
+                .chars()
+                .take(Self::INDENT.len())
+                .take_while(|c| *c == ' ')
+                .count();
+            if remove_count == 0 {
+                continue;
+            }
+            let removed: String = " ".repeat(remove_count);
+            let at = Location { grapheme_idx: 0, line_idx };
+            self.buffer.delete_span(at, &removed);
+            ops.push(EditOp::Delete { at, text: removed });
+        }
+
+        if ops.is_empty() {
+            return;
+        }
+        // Pull cursor left by however many spaces were removed on its line.
+        let cursor_line_removed = ops.iter().find_map(|op| {
+            if let EditOp::Delete { at, text } = op {
+                if at.line_idx == self.text_location.line_idx {
+                    return Some(text.len());
+                }
+            }
+            None
+        }).unwrap_or(0);
+        self.text_location.grapheme_idx =
+            self.text_location.grapheme_idx.saturating_sub(cursor_line_removed);
+
+        let op = if ops.len() == 1 { ops.remove(0) } else { EditOp::Group(ops) };
+        self.undo_history.push_edit(op);
+
+        self.buffer.modified = true;
+        self.cache_version += 1;
+        self.mark_redraw(true);
+    }
+
+    /// Returns the range of line indices that should be affected by indent/dedent.
+    /// If a selection spans multiple lines, returns that range; otherwise the cursor's line.
+    fn selected_line_range(&self) -> std::ops::RangeInclusive<usize> {
+        if let Some(sel) = self.selection {
+            let norm = sel.normalize();
+            norm.start.line_idx..=norm.end.line_idx
+        } else {
+            let l = self.text_location.line_idx;
+            l..=l
+        }
     }
 
     fn insert_char(&mut self, character: char) {
