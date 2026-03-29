@@ -1,5 +1,5 @@
 use crossterm::event::{
-    KeyCode::{Backspace, Char, Delete, Enter, Tab},
+    KeyCode::{BackTab, Backspace, Char, Delete, Enter, Tab},
     KeyEvent, KeyModifiers,
 };
 use std::convert::TryFrom;
@@ -16,6 +16,10 @@ pub enum Edit {
     SelectAll,
     Undo,
     Redo,
+    /// Indent current line (or selected lines) by 4 spaces.
+    IndentLine,
+    /// Dedent current line (or selected lines) by up to 4 spaces.
+    DedentLine,
 }
 
 impl TryFrom<KeyEvent> for Edit {
@@ -34,7 +38,8 @@ impl TryFrom<KeyEvent> for Edit {
             (Char(character), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                 Ok(Self::Insert(character))
             }
-            (Tab, KeyModifiers::NONE) => Ok(Self::Insert('\t')),
+            (Tab, KeyModifiers::NONE) => Ok(Self::IndentLine),
+            (BackTab, _) => Ok(Self::DedentLine),
             (Enter, KeyModifiers::NONE) => Ok(Self::InsertNewline),
             (Backspace, KeyModifiers::NONE) => Ok(Self::Backspace),
             (Delete, KeyModifiers::NONE) => Ok(Self::Delete),

@@ -16,7 +16,8 @@ impl CommandBar {
         match command {
             Edit::Insert(character) => self.value.append_char(character),
             Edit::Delete | Edit::InsertNewline | Edit::Copy | Edit::Cut | Edit::Paste
-            | Edit::SelectAll | Edit::Undo | Edit::Redo => {}
+            | Edit::SelectAll | Edit::Undo | Edit::Redo
+            | Edit::IndentLine | Edit::DedentLine => {}
             Edit::Backspace => self.value.delete_last(),
         }
         self.mark_redraw(true);
