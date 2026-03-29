@@ -44,6 +44,12 @@ impl Buffer {
     }
 
     pub fn save(&mut self) -> Result<(), Error> {
+        if !self.file_info.has_path() {
+            return Err(Error::new(
+                std::io::ErrorKind::Other,
+                "No file path set",
+            ));
+        }
         self.save_to_file(&self.file_info)?;
         self.modified = false;
         Ok(())
