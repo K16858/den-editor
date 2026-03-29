@@ -861,7 +861,10 @@ impl View {
             });
         } else {
             self.buffer.insert_newline(self.text_location);
-            self.handle_move_command(Move::right(false));
+            self.text_location = Location {
+                line_idx: self.text_location.line_idx + 1,
+                grapheme_idx: 0,
+            };
         }
         self.scroll_text_location_into_view();
         self.cache_version += 1;
