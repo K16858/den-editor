@@ -95,12 +95,9 @@ impl Editor {
             }
             match read() {
                 Ok(event) => self.evaluate_event(event),
-                #[cfg(debug_assertions)]
                 Err(err) => {
-                    panic!("Could not read event: {err:?}");
+                    self.update_message(&format!("Input error: {err}"));
                 }
-                #[cfg(not(debug_assertions))]
-                Err(_) => {}
             }
             let status = self.view.get_status();
             self.status_bar.update_status(status);
