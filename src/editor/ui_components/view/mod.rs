@@ -911,16 +911,26 @@ impl View {
             return;
         }
         // Pull cursor left by however many spaces were removed on its line.
-        let cursor_line_removed = ops.iter().find_map(|op| {
-            if let EditOp::Delete { at, text } = op
-                && at.line_idx == self.text_location.line_idx
-            {
-                return Some(text.len());
-            }
-            None
-        }).unwrap_or(0);
-        self.text_location.grapheme_idx =
-            self.text_location.grapheme_idx.saturating_sub(cursor_line_removed);
+        let removed_for_line = |line_idx: usize| -> usize {
+            ops.iter().find_map(|op| {
+                if let EditOp::Delete { at, text } = op
+                    && at.line_idx == line_idx
+                {
+                    return Some(text.len());
+                }
+                None
+            }).unwrap_or(0)
+        };
+        self.text_location.grapheme_idx = self
+            .text_location
+            .grapheme_idx
+            .saturating_sub(removed_for_line(self.text_location.line_idx));
+        if let Some(sel) = &mut self.selection {
+            sel.start.grapheme_idx =
+                sel.start.grapheme_idx.saturating_sub(removed_for_line(sel.start.line_idx));
+            sel.end.grapheme_idx =
+                sel.end.grapheme_idx.saturating_sub(removed_for_line(sel.end.line_idx));
+        }
 
         let op = if ops.len() == 1 { ops.remove(0) } else { EditOp::Group(ops) };
         self.undo_history.push_edit(op);
