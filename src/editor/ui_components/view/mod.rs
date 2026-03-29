@@ -705,6 +705,7 @@ impl View {
             self.undo_history.push_edit(EditOp::Insert {
                 at,
                 text: text.to_string(),
+                cursor_after: new_loc,
             });
         } else {
             for (idx, line) in text.split('\n').enumerate() {
@@ -757,7 +758,7 @@ impl View {
         };
         self.selection = None;
         match &op {
-            EditOp::Insert { at, text } => {
+            EditOp::Insert { at, text, .. } => {
                 self.buffer.delete_span(*at, text);
                 self.text_location = *at;
             }
@@ -767,7 +768,7 @@ impl View {
             EditOp::Group(ops) => {
                 for sub in ops.iter().rev() {
                     match sub {
-                        EditOp::Insert { at, text } => {
+                        EditOp::Insert { at, text, .. } => {
                             self.buffer.delete_span(*at, text);
                             self.text_location = *at;
                         }
@@ -794,8 +795,9 @@ impl View {
         };
         self.selection = None;
         match &op {
-            EditOp::Insert { at, text } => {
-                self.text_location = self.buffer.insert_string(*at, text);
+            EditOp::Insert { cursor_after, at, text } => {
+                self.buffer.insert_string(*at, text);
+                self.text_location = *cursor_after;
             }
             EditOp::Delete { at, text } => {
                 self.buffer.delete_span(*at, text);
@@ -804,8 +806,9 @@ impl View {
             EditOp::Group(ops) => {
                 for sub in ops {
                     match sub {
-                        EditOp::Insert { at, text } => {
-                            self.text_location = self.buffer.insert_string(*at, text);
+                        EditOp::Insert { cursor_after, at, text } => {
+                            self.buffer.insert_string(*at, text);
+                            self.text_location = *cursor_after;
                         }
                         EditOp::Delete { at, text } => {
                             self.buffer.delete_span(*at, text);
@@ -856,8 +859,8 @@ impl View {
         let mut ops: Vec<EditOp> = Vec::new();
         for line_idx in line_range {
             let at = Location { grapheme_idx: 0, line_idx };
-            self.buffer.insert_string(at, Self::INDENT);
-            ops.push(EditOp::Insert { at, text: Self::INDENT.to_string() });
+            let cursor_after = self.buffer.insert_string(at, Self::INDENT);
+            ops.push(EditOp::Insert { at, text: Self::INDENT.to_string(), cursor_after });
         }
 
         let op = if ops.len() == 1 { ops.remove(0) } else { EditOp::Group(ops) };
@@ -980,9 +983,16 @@ impl View {
             self.undo_history.clear_redo();
             let at = self.text_location;
             self.buffer.insert_string(at, &text_to_insert);
+            // For auto-close pairs, cursor sits between the pair (one step right of `at`).
+            // For normal single-char insertion, that is also one step right of `at`.
+            let cursor_after = Location {
+                grapheme_idx: at.grapheme_idx + 1,
+                line_idx: at.line_idx,
+            };
             self.undo_history.push_edit(EditOp::Insert {
                 at,
                 text: text_to_insert,
+                cursor_after,
             });
         } else {
             self.buffer.insert_char(character, self.text_location);
@@ -1020,11 +1030,12 @@ impl View {
         // 2) undo the Delete (restores selected text)
         let _ = self.delete_selection(); // pushes a Delete op
         if self.buffer.is_file_loaded() {
-            let new_loc = self.buffer.insert_string(at, &wrapped);
-            self.text_location = new_loc;
+            let cursor_after = self.buffer.insert_string(at, &wrapped);
+            self.text_location = cursor_after;
             self.undo_history.push_edit(EditOp::Insert {
                 at,
                 text: wrapped,
+                cursor_after,
             });
         }
         self.cache_version += 1;
@@ -1045,11 +1056,12 @@ impl View {
         if self.buffer.is_file_loaded() {
             self.undo_history.clear_redo();
             let at = self.text_location;
-            let new_loc = self.buffer.insert_string(at, &insert_text);
-            self.text_location = new_loc;
+            let cursor_after = self.buffer.insert_string(at, &insert_text);
+            self.text_location = cursor_after;
             self.undo_history.push_edit(EditOp::Insert {
                 at,
                 text: insert_text,
+                cursor_after,
             });
         } else {
             self.buffer.insert_newline(self.text_location);

@@ -2,7 +2,12 @@ use super::location::Location;
 
 #[derive(Clone, Debug)]
 pub enum EditOp {
-    Insert { at: Location, text: String },
+    Insert {
+        at: Location,
+        text: String,
+        /// Cursor position after redo (may differ from the text end, e.g. auto-close).
+        cursor_after: Location,
+    },
     Delete { at: Location, text: String },
     /// Multiple ops that are undone/redone as a single unit.
     Group(Vec<EditOp>),
