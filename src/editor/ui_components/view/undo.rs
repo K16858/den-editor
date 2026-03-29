@@ -36,6 +36,11 @@ impl UndoHistory {
         self.redo_stack.push(op);
     }
 
+    /// Removes and returns the most recently pushed edit without touching the redo stack.
+    pub fn pop_last_edit(&mut self) -> Option<EditOp> {
+        self.undo_stack.pop()
+    }
+
     pub fn clear_redo(&mut self) {
         self.redo_stack.clear();
     }

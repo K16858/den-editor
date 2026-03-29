@@ -1025,7 +1025,7 @@ impl View {
     }
 
     /// Wraps the current selection with `open` and `close` characters.
-    /// The entire operation is recorded as two `EditOp`s (Delete + Insert) for atomic undo.
+    /// The delete and insert are grouped into a single `EditOp::Group` for atomic undo.
     fn wrap_selection_with(&mut self, open: char, close: char) {
         let Some(selection) = self.selection else {
             return;
@@ -1038,19 +1038,18 @@ impl View {
         let at = normalized.start;
         let wrapped = format!("{open}{selected_text}{close}");
 
-        // Remove the selection first, then insert the wrapped version.
-        // The two ops on the undo stack will be undone in LIFO order:
-        // 1) undo the Insert (removes wrapped text, cursor back to `at`)
-        // 2) undo the Delete (restores selected text)
         let _ = self.delete_selection(); // pushes a Delete op
+        let delete_op = self.undo_history.pop_last_edit();
+
         if self.buffer.is_file_loaded() {
             let cursor_after = self.buffer.insert_string(at, &wrapped);
             self.text_location = cursor_after;
-            self.undo_history.push_edit(EditOp::Insert {
-                at,
-                text: wrapped,
-                cursor_after,
-            });
+            let insert_op = EditOp::Insert { at, text: wrapped, cursor_after };
+            let group_op = match delete_op {
+                Some(del) => EditOp::Group(vec![del, insert_op]),
+                None => insert_op,
+            };
+            self.undo_history.push_edit(group_op);
         }
         self.cache_version += 1;
         self.mark_redraw(true);
