@@ -16,6 +16,17 @@ use super::highlight::{HighlightAnnotation, Highlighter};
 use super::{AnnotatedString, AnnotationType};
 use crate::editor::highlight::HighlightState;
 
+/// Parameters for `get_annotated_visible_substr` to avoid too many arguments.
+pub struct GetAnnotatedVisibleSubstrParams<'a> {
+    pub range: Range<usize>,
+    pub query: Option<&'a str>,
+    pub selected_match: Option<usize>,
+    pub highlighter: Option<&'a dyn Highlighter>,
+    pub state: HighlightState,
+    pub cached_annotations: Option<&'a [HighlightAnnotation]>,
+    pub selection_range: Option<Range<usize>>,
+}
+
 #[derive(Default, Clone)]
 pub struct Line {
     fragments: Vec<TextFragment>,
@@ -94,15 +105,15 @@ impl Line {
     }
 
     pub fn get_visible_graphemes(&self, range: Range<usize>) -> String {
-        self.get_annotated_visible_substr(
+        self.get_annotated_visible_substr(GetAnnotatedVisibleSubstrParams {
             range,
-            None,
-            None,
-            None,
-            HighlightState::default(),
-            None,
-            None,
-        )
+            query: None,
+            selected_match: None,
+            highlighter: None,
+            state: HighlightState::default(),
+            cached_annotations: None,
+            selection_range: None,
+        })
         .0
         .to_string()
     }
@@ -111,16 +122,33 @@ impl Line {
         self.fragments.len()
     }
 
+    /// Returns the leading whitespace (spaces and tabs) of the line as a string slice.
+    pub fn leading_whitespace(&self) -> &str {
+        let end = self
+            .string
+            .find(|c: char| c != ' ' && c != '\t')
+            .unwrap_or(self.string.len());
+        &self.string[..end]
+    }
+
+    /// Returns the grapheme at the given index, for undo/redo recording.
+    pub fn grapheme_at(&self, grapheme_idx: usize) -> Option<String> {
+        self.fragments.get(grapheme_idx).map(|f| f.grapheme.clone())
+    }
+
     pub fn get_annotated_visible_substr(
         &self,
-        range: Range<usize>,
-        query: Option<&str>,
-        selected_match: Option<usize>,
-        highlighter: Option<&dyn Highlighter>,
-        state: HighlightState,
-        cached_annotations: Option<&[HighlightAnnotation]>,
-        selection_range: Option<Range<usize>>,
+        params: GetAnnotatedVisibleSubstrParams<'_>,
     ) -> (AnnotatedString, HighlightState) {
+        let GetAnnotatedVisibleSubstrParams {
+            range,
+            query,
+            selected_match,
+            highlighter,
+            state,
+            cached_annotations,
+            selection_range,
+        } = params;
         if range.start >= range.end {
             return (AnnotatedString::default(), state);
         }
@@ -324,6 +352,78 @@ impl Line {
         self.string.len()
     }
 
+    /// Word for Ctrl+Left/Right: identifier (alphanumeric + `_`) or angle-bracket block `<`..`>`.
+    fn is_identifier_at(&self, grapheme_idx: usize) -> bool {
+        self.fragments
+            .get(grapheme_idx)
+            .is_some_and(|f| f.grapheme.chars().all(|c| c.is_alphanumeric() || c == '_'))
+    }
+
+    fn is_angle_open_at(&self, grapheme_idx: usize) -> bool {
+        self.fragments
+            .get(grapheme_idx)
+            .is_some_and(|f| f.grapheme == "<")
+    }
+
+    fn is_angle_close_at(&self, grapheme_idx: usize) -> bool {
+        self.fragments
+            .get(grapheme_idx)
+            .is_some_and(|f| f.grapheme == ">")
+    }
+
+    fn is_skip_at(&self, grapheme_idx: usize) -> bool {
+        !self.is_identifier_at(grapheme_idx) && !self.is_angle_open_at(grapheme_idx)
+    }
+
+    pub fn prev_word_start(&self, grapheme_idx: usize) -> Option<usize> {
+        if grapheme_idx == 0 {
+            return None;
+        }
+        let mut idx = grapheme_idx;
+        while idx > 0 && !self.is_identifier_at(idx - 1) && !self.is_angle_close_at(idx - 1) {
+            idx -= 1;
+        }
+        if idx == 0 {
+            return Some(0);
+        }
+        idx -= 1;
+        if self.is_angle_close_at(idx) {
+            while idx > 0 && !self.is_angle_open_at(idx) {
+                idx -= 1;
+            }
+            Some(idx)
+        } else {
+            while idx > 0 && self.is_identifier_at(idx - 1) {
+                idx -= 1;
+            }
+            Some(idx)
+        }
+    }
+
+    pub fn next_word_end(&self, grapheme_idx: usize) -> Option<usize> {
+        let len = self.grapheme_count();
+        let mut idx = grapheme_idx;
+
+        while idx < len && self.is_skip_at(idx) {
+            idx += 1;
+        }
+        if idx >= len {
+            return None;
+        }
+        if self.is_angle_open_at(idx) {
+            idx += 1;
+            while idx < len && !self.is_angle_close_at(idx) {
+                idx += 1;
+            }
+            if idx < len { Some(idx + 1) } else { None }
+        } else {
+            while idx < len && self.is_identifier_at(idx) {
+                idx += 1;
+            }
+            Some(idx)
+        }
+    }
+
     pub fn search_forward(&self, query: &str, from_grapheme_idx: usize) -> Option<usize> {
         debug_assert!(from_grapheme_idx <= self.grapheme_count());
         if from_grapheme_idx == self.grapheme_count() {
@@ -411,15 +511,15 @@ mod tests {
     #[test]
     fn selection_annotation_applied_for_mid_line_range() {
         let line = Line::from("abcdef");
-        let (ann, _) = line.get_annotated_visible_substr(
-            0..80,
-            None,
-            None,
-            None,
-            HighlightState::default(),
-            None,
-            Some(2..3),
-        );
+        let (ann, _) = line.get_annotated_visible_substr(GetAnnotatedVisibleSubstrParams {
+            range: 0..80,
+            query: None,
+            selected_match: None,
+            highlighter: None,
+            state: HighlightState::default(),
+            cached_annotations: None,
+            selection_range: Some(2..3),
+        });
         let mut found_selection = false;
         for part in &ann {
             if part.annotation_type == Some(AnnotationType::Selection) {

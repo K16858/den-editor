@@ -29,8 +29,8 @@ impl<'a> Iterator for AnnotatedStringIterator<'a> {
         let annotation = covering
             .iter()
             .find(|a| a.kind == AnnotationType::Selection)
-            .map(|a| *a)
-            .or_else(|| covering.last().map(|v| *v));
+            .copied()
+            .or_else(|| covering.last().copied());
         if let Some(annotation) = annotation {
             let start_idx = self.current_idx;
             let mut end_idx = min(annotation.end, self.annotated_string.string.len());

@@ -1,5 +1,5 @@
 use crossterm::event::{
-    KeyCode::{Down, Left, Right, Up},
+    KeyCode::{Down, End, Home, Left, PageDown, PageUp, Right, Up},
     KeyEvent, KeyModifiers,
 };
 
@@ -13,8 +13,14 @@ pub struct Move {
 pub enum MoveDirection {
     PageUp,
     PageDown,
+    ScrollUp,
+    ScrollDown,
+    WordLeft,
+    WordRight,
     LineStart,
     LineEnd,
+    DocumentStart,
+    DocumentEnd,
     Up,
     Left,
     Right,
@@ -45,10 +51,22 @@ impl TryFrom<KeyEvent> for Move {
         } = event;
         let is_selection = modifiers.contains(KeyModifiers::SHIFT);
         let direction = match (code, modifiers) {
-            (Up, KeyModifiers::CONTROL) => MoveDirection::PageUp,
-            (Down, KeyModifiers::CONTROL) => MoveDirection::PageDown,
-            (Left, KeyModifiers::CONTROL) => MoveDirection::LineStart,
-            (Right, KeyModifiers::CONTROL) => MoveDirection::LineEnd,
+            (Up, KeyModifiers::CONTROL) => MoveDirection::ScrollUp,
+            (Down, KeyModifiers::CONTROL) => MoveDirection::ScrollDown,
+            (PageUp, _) => MoveDirection::PageUp,
+            (PageDown, _) => MoveDirection::PageDown,
+            (Left, m) if m.contains(KeyModifiers::CONTROL) && m.contains(KeyModifiers::SHIFT) => {
+                MoveDirection::WordLeft
+            }
+            (Right, m) if m.contains(KeyModifiers::CONTROL) && m.contains(KeyModifiers::SHIFT) => {
+                MoveDirection::WordRight
+            }
+            (Left, KeyModifiers::CONTROL) => MoveDirection::WordLeft,
+            (Right, KeyModifiers::CONTROL) => MoveDirection::WordRight,
+            (Home, m) if m.contains(KeyModifiers::CONTROL) => MoveDirection::DocumentStart,
+            (End, m) if m.contains(KeyModifiers::CONTROL) => MoveDirection::DocumentEnd,
+            (Home, _) => MoveDirection::LineStart,
+            (End, _) => MoveDirection::LineEnd,
             (Up, _) => MoveDirection::Up,
             (Down, _) => MoveDirection::Down,
             (Left, _) => MoveDirection::Left,

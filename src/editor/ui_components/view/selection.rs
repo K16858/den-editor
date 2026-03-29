@@ -30,21 +30,6 @@ impl Selection {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn contains_location(&self, loc: Location) -> bool {
-        let normalized = self.normalize();
-        if loc.line_idx < normalized.start.line_idx || loc.line_idx > normalized.end.line_idx {
-            return false;
-        }
-        if loc.line_idx == normalized.start.line_idx {
-            loc.grapheme_idx >= normalized.start.grapheme_idx
-        } else if loc.line_idx == normalized.end.line_idx {
-            loc.grapheme_idx < normalized.end.grapheme_idx
-        } else {
-            true
-        }
-    }
-
     pub fn get_ranges(&self, buffer: &Buffer) -> Vec<(usize, Range<usize>)> {
         let normalized = self.normalize();
         if normalized.is_empty() {

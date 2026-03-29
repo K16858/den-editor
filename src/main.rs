@@ -3,5 +3,11 @@ mod editor;
 use editor::Editor;
 
 fn main() {
-    Editor::new().unwrap().run();
+    match Editor::new() {
+        Ok(mut editor) => editor.run(),
+        Err(err) => {
+            eprintln!("Failed to start editor: {err}");
+            std::process::exit(1);
+        }
+    }
 }

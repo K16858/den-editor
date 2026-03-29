@@ -110,16 +110,10 @@ pub fn discover_language_extensions() -> Vec<(String, Vec<String>)> {
 }
 
 fn load_languages_from_dir(dir: &Path, map: &mut HashMap<String, Vec<String>>, is_default: bool) {
-    let read_dir = match fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(_) => return,
-    };
+    let Ok(read_dir) = fs::read_dir(dir) else { return };
 
     for entry in read_dir {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        let Ok(entry) = entry else { continue };
         let path = entry.path();
 
         if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
@@ -135,10 +129,7 @@ fn load_languages_from_dir(dir: &Path, map: &mut HashMap<String, Vec<String>>, i
             continue;
         }
 
-        let config = match load_language_config(&file_stem, Some(&path)) {
-            Ok(cfg) => cfg,
-            Err(_) => continue,
-        };
+        let Ok(config) = load_language_config(&file_stem, Some(&path)) else { continue };
 
         let exts = config
             .extensions

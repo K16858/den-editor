@@ -24,7 +24,7 @@ use self::command::{
     Command::{self, Edit, Move, System},
     Edit::InsertNewline,
     MoveDirection,
-    System::{Dismiss, Quit, Resize, Save, Search},
+    System::{Dismiss, Quit, Replace, Resize, Save, Search},
 };
 
 pub const NAME: &str = env!("CARGO_PKG_NAME");
@@ -36,6 +36,8 @@ const QUIT_TIMES: u8 = 2;
 enum PromptType {
     Search,
     Save,
+    ReplaceSearch,
+    Replace,
     #[default]
     None,
 }
@@ -55,6 +57,7 @@ pub struct Editor {
     message_bar: MessageBar,
     command_bar: CommandBar,
     prompt_type: PromptType,
+    replace_query: String,
     title: String,
     quit_times: u8,
 }
@@ -71,7 +74,7 @@ impl Editor {
         let mut editor = Self::default();
         let size = Terminal::size().unwrap_or_default();
         editor.resize(size);
-        editor.update_message("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
+        // editor.update_message("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-C = copy | Ctrl-X = cut | Ctrl-V = paste | Ctrl-F = find | Ctrl-Z = undo | Ctrl-Shift-Z = redo | Ctrl-A = select all");
 
         let args: Vec<String> = env::args().collect();
         if let Some(file_name) = args.get(1)
@@ -92,12 +95,9 @@ impl Editor {
             }
             match read() {
                 Ok(event) => self.evaluate_event(event),
-                #[cfg(debug_assertions)]
                 Err(err) => {
-                    panic!("Could not read event: {err:?}");
+                    self.update_message(&format!("Input error: {err}"));
                 }
-                #[cfg(not(debug_assertions))]
-                Err(_) => {}
             }
             let status = self.view.get_status();
             self.status_bar.update_status(status);
@@ -113,7 +113,8 @@ impl Editor {
                 self.view.paste_text(&data);
             } else {
                 for ch in data.chars() {
-                    self.command_bar.handle_edit_command(command::Edit::Insert(ch));
+                    self.command_bar
+                        .handle_edit_command(command::Edit::Insert(ch));
                 }
             }
             return;
@@ -139,6 +140,8 @@ impl Editor {
         match self.prompt_type {
             PromptType::Search => self.process_command_during_search(command),
             PromptType::Save => self.process_command_during_save(command),
+            PromptType::ReplaceSearch => self.process_command_during_replace_search(command),
+            PromptType::Replace => self.process_command_during_replace(command),
             PromptType::None => self.process_command_no_prompt(command),
         }
     }
@@ -154,10 +157,16 @@ impl Editor {
         self.reset_quit_times();
 
         match command {
-            System(Quit | Resize(_) | Dismiss) => {}
+            System(Quit | Resize(_)) => {}
+            System(Dismiss) => self.view.clear_selection(),
             System(Search) => self.set_prompt(PromptType::Search),
+            System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
             System(Save) => self.handle_save(),
-            Edit(edit_command) => self.view.handle_edit_command(edit_command),
+            Edit(edit_command) => {
+                if let Some(err) = self.view.handle_edit_command(edit_command) {
+                    self.update_message(err);
+                }
+            }
 
             Move(move_command) => self.view.handle_move_command(move_command),
         }
@@ -178,19 +187,26 @@ impl Editor {
                 let query = self.command_bar.value();
                 self.view.search(&query);
             }
-            Move(move_cmd) if matches!(move_cmd.direction, MoveDirection::Right | MoveDirection::Down) => {
+            Move(move_cmd)
+                if matches!(
+                    move_cmd.direction,
+                    MoveDirection::Right | MoveDirection::Down
+                ) =>
+            {
                 self.view.search_next();
             }
-            Move(move_cmd) if matches!(move_cmd.direction, MoveDirection::Up | MoveDirection::Left) => {
+            Move(move_cmd)
+                if matches!(move_cmd.direction, MoveDirection::Up | MoveDirection::Left) =>
+            {
                 self.view.search_prev();
             }
-            System(Quit | Resize(_) | Search | Save) | Move(_) => {}
+            System(Quit | Resize(_) | Search | Save | Replace) | Move(_) => {}
         }
     }
 
     fn process_command_during_save(&mut self, command: Command) {
         match command {
-            System(Quit | Resize(_) | Search | Save) | Move(_) => {} // Not applicable during save, Resize already handled at this stage
+            System(Quit | Resize(_) | Search | Save | Replace) | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
                 self.set_prompt(PromptType::None);
                 self.update_message("Save aborted.");
@@ -201,6 +217,61 @@ impl Editor {
                 self.set_prompt(PromptType::None);
             }
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
+        }
+    }
+
+    fn process_command_during_replace_search(&mut self, command: Command) {
+        match command {
+            System(Dismiss) => {
+                self.set_prompt(PromptType::None);
+                self.view.dismiss_search();
+            }
+            Edit(InsertNewline) => {
+                self.replace_query = self.command_bar.value();
+                self.set_prompt(PromptType::Replace);
+            }
+            Edit(edit_command) => {
+                self.command_bar.handle_edit_command(edit_command);
+                let query = self.command_bar.value();
+                self.view.search(&query);
+            }
+            Move(move_cmd)
+                if matches!(
+                    move_cmd.direction,
+                    MoveDirection::Right | MoveDirection::Down
+                ) =>
+            {
+                self.view.search_next();
+            }
+            Move(move_cmd)
+                if matches!(move_cmd.direction, MoveDirection::Up | MoveDirection::Left) =>
+            {
+                self.view.search_prev();
+            }
+            System(Quit | Resize(_) | Search | Save | Replace) | Move(_) => {}
+        }
+    }
+
+    fn process_command_during_replace(&mut self, command: Command) {
+        match command {
+            System(Dismiss) => {
+                self.set_prompt(PromptType::None);
+                self.view.dismiss_search();
+            }
+            Edit(InsertNewline) => {
+                let replacement = self.command_bar.value();
+                let query = self.replace_query.clone();
+                self.view.exit_search();
+                let count = self.view.replace_all(&query, &replacement);
+                self.set_prompt(PromptType::None);
+                if count == 0 {
+                    self.update_message("No matches found.");
+                } else {
+                    self.update_message(&format!("Replaced {count} occurrence(s)."));
+                }
+            }
+            Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
+            System(Quit | Resize(_) | Search | Save | Replace) | Move(_) => {}
         }
     }
 
@@ -215,6 +286,13 @@ impl Editor {
                 self.view.enter_search();
                 self.command_bar
                     .set_prompt("Search (Esc to cancel, Arrows to navigate): ");
+            }
+            PromptType::ReplaceSearch => {
+                self.view.enter_search();
+                self.command_bar.set_prompt("Replace (search): ");
+            }
+            PromptType::Replace => {
+                self.command_bar.set_prompt("Replace with: ");
             }
         }
         self.command_bar.clear_value();

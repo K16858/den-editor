@@ -362,24 +362,22 @@ impl Highlighter for RustHighlighter {
                     if ch == bracket_config.open {
                         let level = (bracket_levels[bracket_idx] + bracket_config.color_offset) % 4;
                         bracket_levels[bracket_idx] += 1;
-                        bracket_type = Some(match level {
-                            0 => AnnotationType::Bracket0,
-                            1 => AnnotationType::Bracket1,
-                            2 => AnnotationType::Bracket2,
-                            3 => AnnotationType::Bracket3,
-                            _ => unreachable!(),
-                        });
+                        bracket_type = Some([
+                            AnnotationType::Bracket0,
+                            AnnotationType::Bracket1,
+                            AnnotationType::Bracket2,
+                            AnnotationType::Bracket3,
+                        ][level]);
                         break;
                     } else if ch == bracket_config.close {
                         bracket_levels[bracket_idx] = bracket_levels[bracket_idx].saturating_sub(1);
                         let level = (bracket_levels[bracket_idx] + bracket_config.color_offset) % 4;
-                        bracket_type = Some(match level {
-                            0 => AnnotationType::Bracket0,
-                            1 => AnnotationType::Bracket1,
-                            2 => AnnotationType::Bracket2,
-                            3 => AnnotationType::Bracket3,
-                            _ => unreachable!(),
-                        });
+                        bracket_type = Some([
+                            AnnotationType::Bracket0,
+                            AnnotationType::Bracket1,
+                            AnnotationType::Bracket2,
+                            AnnotationType::Bracket3,
+                        ][level]);
                         break;
                     }
                 }

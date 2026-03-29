@@ -4,10 +4,15 @@ use crate::editor::highlight::{
     HighlightAnnotation, HighlightState, LanguageConfig, StringType, load_language_config,
     merge_config,
 };
+use aho_corasick::AhoCorasick;
 
 pub struct GenericHighlighter {
     config: LanguageConfig,
     language_name: String,
+    /// Precompiled automaton covering all keywords then all `primitive_types`.
+    /// Patterns `0..keyword_count` are keywords; the rest are primitive types.
+    keyword_ac: Option<AhoCorasick>,
+    keyword_count: usize,
 }
 
 impl GenericHighlighter {
@@ -48,13 +53,29 @@ impl GenericHighlighter {
             }
         };
 
+        let keyword_count = config.keywords.len();
+        let all_patterns: Vec<&str> = config
+            .keywords
+            .iter()
+            .chain(config.primitive_types.iter())
+            .map(String::as_str)
+            .collect();
+        let keyword_ac = if all_patterns.is_empty() {
+            None
+        } else {
+            AhoCorasick::new(&all_patterns).ok()
+        };
+
         Some(Self {
             config,
             language_name: language.to_string(),
+            keyword_ac,
+            keyword_count,
         })
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn find_string_ranges(
     string: &str,
     state: &mut HighlightState,
@@ -223,17 +244,15 @@ fn find_keyword_at(line: &str, keyword: &str, pos: usize) -> bool {
         None
     };
 
-    if let Some(keyword_first_char) = keyword.chars().next() {
-        if keyword_first_char.is_uppercase() {
-            if let Some(prev_ch) = prev_char {
-                if is_camel_case_boundary(prev_ch, keyword_first_char) {
-                    return false;
-                }
-            }
-        }
+    if let Some(keyword_first_char) = keyword.chars().next()
+        && keyword_first_char.is_uppercase()
+        && let Some(prev_ch) = prev_char
+        && is_camel_case_boundary(prev_ch, keyword_first_char)
+    {
+        return false;
     }
 
-    let before_ok = prev_char.map_or(true, |ch| is_word_boundary(ch));
+    let before_ok = prev_char.is_none_or(is_word_boundary);
 
     let after_pos = pos + keyword.len();
     let after_ok = if after_pos >= line.len() {
@@ -246,7 +265,7 @@ fn find_keyword_at(line: &str, keyword: &str, pos: usize) -> bool {
                 break;
             }
         }
-        next_char.map_or(true, |ch| is_word_boundary(ch))
+        next_char.is_none_or(is_word_boundary)
     };
 
     before_ok && after_ok
@@ -289,7 +308,7 @@ impl Highlighter for GenericHighlighter {
             string_ranges.iter().any(|range| range.contains(&pos))
                 || continuation_range
                     .as_ref()
-                    .map_or(false, |range| range.contains(&pos))
+                    .is_some_and(|range| range.contains(&pos))
         };
 
         // Block comments
@@ -370,61 +389,38 @@ impl Highlighter for GenericHighlighter {
             }
         };
 
-        // Keywords
-        for keyword in self.config.keywords.iter().map(std::string::String::as_str) {
-            let mut search_pos = 0;
-            while search_pos < line.len() {
-                if let Some(found_pos) = line[search_pos..].find(keyword) {
-                    let abs_pos = search_pos + found_pos;
-                    if find_keyword_at(line, keyword, abs_pos)
-                        && !is_in_string(abs_pos)
-                        && !is_in_comment(abs_pos)
-                    {
-                        annotations.push(HighlightAnnotation {
-                            start: abs_pos,
-                            end: abs_pos + keyword.len(),
-                            annotation_type: AnnotationType::Keyword,
-                        });
-                    }
-                    search_pos = abs_pos + 1;
+        // Keywords and primitive types — single Aho-Corasick pass
+        if let Some(ac) = &self.keyword_ac {
+            for mat in ac.find_iter(line) {
+                let abs_pos = mat.start();
+                let pattern_idx = mat.pattern().as_usize();
+                let word = if pattern_idx < self.keyword_count {
+                    self.config.keywords[pattern_idx].as_str()
                 } else {
-                    break;
+                    self.config.primitive_types[pattern_idx - self.keyword_count].as_str()
+                };
+                if find_keyword_at(line, word, abs_pos)
+                    && !is_in_string(abs_pos)
+                    && !is_in_comment(abs_pos)
+                {
+                    let annotation_type = if pattern_idx < self.keyword_count {
+                        AnnotationType::Keyword
+                    } else {
+                        AnnotationType::PrimitiveType
+                    };
+                    annotations.push(HighlightAnnotation {
+                        start: abs_pos,
+                        end: mat.end(),
+                        annotation_type,
+                    });
                 }
             }
         }
 
-        // Primitive types
-        for prim_type in self
-            .config
-            .primitive_types
-            .iter()
-            .map(std::string::String::as_str)
-        {
-            let mut search_pos = 0;
-            while search_pos < line.len() {
-                if let Some(found_pos) = line[search_pos..].find(prim_type) {
-                    let abs_pos = search_pos + found_pos;
-                    if find_keyword_at(line, prim_type, abs_pos)
-                        && !is_in_string(abs_pos)
-                        && !is_in_comment(abs_pos)
-                    {
-                        annotations.push(HighlightAnnotation {
-                            start: abs_pos,
-                            end: abs_pos + prim_type.len(),
-                            annotation_type: AnnotationType::PrimitiveType,
-                        });
-                    }
-                    search_pos = abs_pos + 1;
-                } else {
-                    break;
-                }
-            }
-        }
-
-        // Numbers
-        let mut chars = line.chars().enumerate().peekable();
-        while let Some((idx, ch)) = chars.next() {
-            if is_in_string(idx) || is_in_comment(idx) {
+        // Numbers — use char_indices() for byte offsets
+        let mut chars = line.char_indices().peekable();
+        while let Some((byte_idx, ch)) = chars.next() {
+            if is_in_string(byte_idx) || is_in_comment(byte_idx) {
                 continue;
             }
 
@@ -434,21 +430,21 @@ impl Highlighter for GenericHighlighter {
                         *next_ch == 'x' || *next_ch == 'b' || *next_ch == 'o'
                     }))
             {
-                let start = idx;
-                let mut end = idx + 1;
+                let start = byte_idx;
+                let mut end = byte_idx + ch.len_utf8();
 
                 if ch == '0'
-                    && let Some((_, next_ch)) = chars.peek()
-                    && (*next_ch == 'x' || *next_ch == 'b' || *next_ch == 'o')
+                    && let Some(&(_, next_ch)) = chars.peek()
+                    && (next_ch == 'x' || next_ch == 'b' || next_ch == 'o')
                 {
                     chars.next();
-                    end += 1;
+                    end += 1; // 'x', 'b', 'o' are ASCII
                 }
 
-                while let Some(&(_, next_ch)) = chars.peek() {
+                while let Some(&(next_byte_idx, next_ch)) = chars.peek() {
                     if next_ch.is_alphanumeric() || next_ch == '_' || next_ch == '.' {
                         chars.next();
-                        end += 1;
+                        end = next_byte_idx + next_ch.len_utf8();
                     } else {
                         break;
                     }
@@ -473,11 +469,11 @@ impl Highlighter for GenericHighlighter {
 
             if ch.is_uppercase() {
                 // Only consider this a type name start if the previous character is a word boundary
-                if let Some(prev) = prev_char {
-                    if !is_word_boundary(prev) {
-                        prev_char = Some(ch);
-                        continue;
-                    }
+                if let Some(prev) = prev_char
+                    && !is_word_boundary(prev)
+                {
+                    prev_char = Some(ch);
+                    continue;
                 }
 
                 let start = byte_idx;
@@ -497,7 +493,7 @@ impl Highlighter for GenericHighlighter {
                     next_char = Some(ch_after);
                 }
 
-                let after_ok = next_char.map_or(true, |c| is_word_boundary(c));
+                let after_ok = next_char.is_none_or(is_word_boundary);
 
                 if after_ok {
                     let word = &line[start..end];
@@ -516,98 +512,92 @@ impl Highlighter for GenericHighlighter {
             prev_char = Some(ch);
         }
 
-        // Brackets
+        // Brackets — use char_indices() for byte offsets
         let mut paren_level = state.paren_level;
         let mut brace_level = state.brace_level;
         let mut bracket_level = state.bracket_level;
 
-        for (idx, ch) in line.chars().enumerate() {
-            if is_in_string(idx) || is_in_comment(idx) {
+        for (byte_idx, ch) in line.char_indices() {
+            if is_in_string(byte_idx) || is_in_comment(byte_idx) {
                 continue;
             }
 
             if ch == '(' {
-                let color_index = paren_level % 4;
-                let annotation_type = match color_index {
-                    0 => AnnotationType::Bracket0,
-                    1 => AnnotationType::Bracket1,
-                    2 => AnnotationType::Bracket2,
-                    _ => AnnotationType::Bracket3,
-                };
+                let annotation_type = [
+                    AnnotationType::Bracket0,
+                    AnnotationType::Bracket1,
+                    AnnotationType::Bracket2,
+                    AnnotationType::Bracket3,
+                ][paren_level % 4];
                 annotations.push(HighlightAnnotation {
-                    start: idx,
-                    end: idx + 1,
+                    start: byte_idx,
+                    end: byte_idx + 1,
                     annotation_type,
                 });
                 paren_level += 1;
             } else if ch == ')' {
                 paren_level = paren_level.saturating_sub(1);
-                let color_index = paren_level % 4;
-                let annotation_type = match color_index {
-                    0 => AnnotationType::Bracket0,
-                    1 => AnnotationType::Bracket1,
-                    2 => AnnotationType::Bracket2,
-                    _ => AnnotationType::Bracket3,
-                };
+                let annotation_type = [
+                    AnnotationType::Bracket0,
+                    AnnotationType::Bracket1,
+                    AnnotationType::Bracket2,
+                    AnnotationType::Bracket3,
+                ][paren_level % 4];
                 annotations.push(HighlightAnnotation {
-                    start: idx,
-                    end: idx + 1,
+                    start: byte_idx,
+                    end: byte_idx + 1,
                     annotation_type,
                 });
             } else if ch == '{' {
-                let color_index = (brace_level + 1) % 4;
-                let annotation_type = match color_index {
-                    0 => AnnotationType::Bracket0,
-                    1 => AnnotationType::Bracket1,
-                    2 => AnnotationType::Bracket2,
-                    _ => AnnotationType::Bracket3,
-                };
+                let annotation_type = [
+                    AnnotationType::Bracket0,
+                    AnnotationType::Bracket1,
+                    AnnotationType::Bracket2,
+                    AnnotationType::Bracket3,
+                ][(brace_level + 1) % 4];
                 annotations.push(HighlightAnnotation {
-                    start: idx,
-                    end: idx + 1,
+                    start: byte_idx,
+                    end: byte_idx + 1,
                     annotation_type,
                 });
                 brace_level += 1;
             } else if ch == '}' {
                 brace_level = brace_level.saturating_sub(1);
-                let color_index = (brace_level + 1) % 4;
-                let annotation_type = match color_index {
-                    0 => AnnotationType::Bracket0,
-                    1 => AnnotationType::Bracket1,
-                    2 => AnnotationType::Bracket2,
-                    _ => AnnotationType::Bracket3,
-                };
+                let annotation_type = [
+                    AnnotationType::Bracket0,
+                    AnnotationType::Bracket1,
+                    AnnotationType::Bracket2,
+                    AnnotationType::Bracket3,
+                ][(brace_level + 1) % 4];
                 annotations.push(HighlightAnnotation {
-                    start: idx,
-                    end: idx + 1,
+                    start: byte_idx,
+                    end: byte_idx + 1,
                     annotation_type,
                 });
             } else if ch == '[' {
-                let color_index = (bracket_level + 2) % 4;
-                let annotation_type = match color_index {
-                    0 => AnnotationType::Bracket0,
-                    1 => AnnotationType::Bracket1,
-                    2 => AnnotationType::Bracket2,
-                    _ => AnnotationType::Bracket3,
-                };
+                let annotation_type = [
+                    AnnotationType::Bracket0,
+                    AnnotationType::Bracket1,
+                    AnnotationType::Bracket2,
+                    AnnotationType::Bracket3,
+                ][(bracket_level + 2) % 4];
                 annotations.push(HighlightAnnotation {
-                    start: idx,
-                    end: idx + 1,
+                    start: byte_idx,
+                    end: byte_idx + 1,
                     annotation_type,
                 });
                 bracket_level += 1;
             } else if ch == ']' {
                 bracket_level = bracket_level.saturating_sub(1);
-                let color_index = (bracket_level + 2) % 4;
-                let annotation_type = match color_index {
-                    0 => AnnotationType::Bracket0,
-                    1 => AnnotationType::Bracket1,
-                    2 => AnnotationType::Bracket2,
-                    _ => AnnotationType::Bracket3,
-                };
+                let annotation_type = [
+                    AnnotationType::Bracket0,
+                    AnnotationType::Bracket1,
+                    AnnotationType::Bracket2,
+                    AnnotationType::Bracket3,
+                ][(bracket_level + 2) % 4];
                 annotations.push(HighlightAnnotation {
-                    start: idx,
-                    end: idx + 1,
+                    start: byte_idx,
+                    end: byte_idx + 1,
                     annotation_type,
                 });
             }
