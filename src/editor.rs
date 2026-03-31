@@ -90,7 +90,9 @@ impl Editor {
                     sidebar_focus = false;
                 } else if p.is_file() {
                     let parent = p.parent().unwrap_or_else(|| Path::new("."));
-                    workspace_root = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
+                    workspace_root = parent
+                        .canonicalize()
+                        .unwrap_or_else(|_| parent.to_path_buf());
                     load_path = Some(p.canonicalize().unwrap_or(p));
                 }
             }

@@ -1,8 +1,4 @@
-use super::super::{
-    Position, Size,
-    command::MoveDirection,
-    terminal::Terminal,
-};
+use super::super::{Position, Size, command::MoveDirection, terminal::Terminal};
 use super::UIComponent;
 use crossterm::style::Attribute::{Reset, Reverse};
 use std::collections::HashSet;

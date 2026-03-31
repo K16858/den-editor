@@ -29,13 +29,8 @@ type HighlightCache = HashMap<usize, (Vec<HighlightAnnotation>, HighlightState, 
 
 /// Pairs of opening and closing brackets/quotes for auto-close.
 /// TODO: move this to a configuration file so users can customize the pairs.
-const BRACKET_PAIRS: &[(char, char)] = &[
-    ('(', ')'),
-    ('[', ']'),
-    ('{', '}'),
-    ('"', '"'),
-    ('\'', '\''),
-];
+const BRACKET_PAIRS: &[(char, char)] =
+    &[('(', ')'), ('[', ']'), ('{', '}'), ('"', '"'), ('\'', '\'')];
 
 /// Returns the matching closing character for `ch` if it is an opening bracket.
 fn closing_bracket_for(ch: char) -> Option<char> {
@@ -823,7 +818,11 @@ impl View {
         };
         self.selection = None;
         match &op {
-            EditOp::Insert { cursor_after, at, text } => {
+            EditOp::Insert {
+                cursor_after,
+                at,
+                text,
+            } => {
                 self.buffer.insert_string(*at, text);
                 self.text_location = *cursor_after;
             }
@@ -834,7 +833,11 @@ impl View {
             EditOp::Group(ops) => {
                 for sub in ops {
                     match sub {
-                        EditOp::Insert { cursor_after, at, text } => {
+                        EditOp::Insert {
+                            cursor_after,
+                            at,
+                            text,
+                        } => {
                             self.buffer.insert_string(*at, text);
                             self.text_location = *cursor_after;
                         }
@@ -886,17 +889,30 @@ impl View {
 
         let mut ops: Vec<EditOp> = Vec::new();
         for line_idx in line_range {
-            let at = Location { grapheme_idx: 0, line_idx };
+            let at = Location {
+                grapheme_idx: 0,
+                line_idx,
+            };
             let cursor_after = self.buffer.insert_string(at, Self::INDENT);
-            ops.push(EditOp::Insert { at, text: Self::INDENT.to_string(), cursor_after });
+            ops.push(EditOp::Insert {
+                at,
+                text: Self::INDENT.to_string(),
+                cursor_after,
+            });
         }
 
-        let op = if ops.len() == 1 { ops.remove(0) } else { EditOp::Group(ops) };
+        let op = if ops.len() == 1 {
+            ops.remove(0)
+        } else {
+            EditOp::Group(ops)
+        };
         self.undo_history.push_edit(op);
 
         // Shift cursor and selection right by indent width.
-        self.text_location.grapheme_idx =
-            self.text_location.grapheme_idx.saturating_add(Self::INDENT.len());
+        self.text_location.grapheme_idx = self
+            .text_location
+            .grapheme_idx
+            .saturating_add(Self::INDENT.len());
         if let Some(sel) = &mut self.selection {
             sel.start.grapheme_idx = sel.start.grapheme_idx.saturating_add(Self::INDENT.len());
             sel.end.grapheme_idx = sel.end.grapheme_idx.saturating_add(Self::INDENT.len());
@@ -930,7 +946,10 @@ impl View {
                 continue;
             }
             let removed: String = " ".repeat(remove_count);
-            let at = Location { grapheme_idx: 0, line_idx };
+            let at = Location {
+                grapheme_idx: 0,
+                line_idx,
+            };
             self.buffer.delete_span(at, &removed);
             ops.push(EditOp::Delete { at, text: removed });
         }
@@ -940,27 +959,37 @@ impl View {
         }
         // Pull cursor left by however many spaces were removed on its line.
         let removed_for_line = |line_idx: usize| -> usize {
-            ops.iter().find_map(|op| {
-                if let EditOp::Delete { at, text } = op
-                    && at.line_idx == line_idx
-                {
-                    return Some(text.len());
-                }
-                None
-            }).unwrap_or(0)
+            ops.iter()
+                .find_map(|op| {
+                    if let EditOp::Delete { at, text } = op
+                        && at.line_idx == line_idx
+                    {
+                        return Some(text.len());
+                    }
+                    None
+                })
+                .unwrap_or(0)
         };
         self.text_location.grapheme_idx = self
             .text_location
             .grapheme_idx
             .saturating_sub(removed_for_line(self.text_location.line_idx));
         if let Some(sel) = &mut self.selection {
-            sel.start.grapheme_idx =
-                sel.start.grapheme_idx.saturating_sub(removed_for_line(sel.start.line_idx));
-            sel.end.grapheme_idx =
-                sel.end.grapheme_idx.saturating_sub(removed_for_line(sel.end.line_idx));
+            sel.start.grapheme_idx = sel
+                .start
+                .grapheme_idx
+                .saturating_sub(removed_for_line(sel.start.line_idx));
+            sel.end.grapheme_idx = sel
+                .end
+                .grapheme_idx
+                .saturating_sub(removed_for_line(sel.end.line_idx));
         }
 
-        let op = if ops.len() == 1 { ops.remove(0) } else { EditOp::Group(ops) };
+        let op = if ops.len() == 1 {
+            ops.remove(0)
+        } else {
+            EditOp::Group(ops)
+        };
         self.undo_history.push_edit(op);
 
         self.buffer.modified = true;
@@ -1072,7 +1101,11 @@ impl View {
         if self.buffer.is_file_loaded() {
             let cursor_after = self.buffer.insert_string(at, &wrapped);
             self.text_location = cursor_after;
-            let insert_op = EditOp::Insert { at, text: wrapped, cursor_after };
+            let insert_op = EditOp::Insert {
+                at,
+                text: wrapped,
+                cursor_after,
+            };
             let group_op = match delete_op {
                 Some(del) => EditOp::Group(vec![del, insert_op]),
                 None => insert_op,
@@ -1141,10 +1174,7 @@ impl View {
             }
             self.handle_move_command(Move::left(false));
             let at = self.text_location;
-            let text = self
-                .buffer
-                .content_deleted_at(at)
-                .unwrap_or_default();
+            let text = self.buffer.content_deleted_at(at).unwrap_or_default();
             self.buffer.delete(at);
             if self.buffer.is_file_loaded() && !text.is_empty() {
                 self.undo_history.push_edit(EditOp::Delete { at, text });
@@ -1160,10 +1190,7 @@ impl View {
         }
 
         let at = self.text_location;
-        let text = self
-            .buffer
-            .content_deleted_at(at)
-            .unwrap_or_default();
+        let text = self.buffer.content_deleted_at(at).unwrap_or_default();
         self.buffer.delete(self.text_location);
         if self.buffer.is_file_loaded() && !text.is_empty() {
             self.undo_history.clear_redo();
