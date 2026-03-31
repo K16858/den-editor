@@ -55,6 +55,8 @@ pub struct View {
     buffer: Buffer,
     needs_redraw: bool,
     size: Size,
+    /// Horizontal skip when drawing (e.g. sidebar width). Affects caret column only for the main buffer area.
+    col_offset: usize,
     text_location: Location,
     scroll_offset: Position,
     search_info: Option<SearchInfo>,
@@ -66,6 +68,11 @@ pub struct View {
 }
 
 impl View {
+    pub fn set_col_offset(&mut self, col_offset: usize) {
+        self.col_offset = col_offset;
+        self.mark_redraw(true);
+    }
+
     pub fn get_status(&self) -> DocumentStatus {
         let language_name = self
             .buffer
@@ -92,9 +99,9 @@ impl View {
         for row in 0..height {
             let draw_row = origin_y + row;
             if row == vertical_center {
-                Self::draw_welcome_message_at(draw_row, width)?;
+                self.draw_welcome_message_at(draw_row, width)?;
             } else {
-                Self::draw_empty_row(draw_row)?;
+                self.draw_empty_row(draw_row)?;
             }
         }
         Ok(())
@@ -184,7 +191,7 @@ impl View {
                         state = new_state;
                         Terminal::print_annotated_row_with_prefix(
                             draw_row,
-                            0,
+                            self.col_offset,
                             &line_num_str,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
@@ -208,7 +215,7 @@ impl View {
                         state = final_state;
                         Terminal::print_annotated_row_with_prefix(
                             draw_row,
-                            0,
+                            self.col_offset,
                             &line_num_str,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
@@ -227,7 +234,7 @@ impl View {
                         state = new_state;
                         Terminal::print_annotated_row_with_prefix(
                             draw_row,
-                            0,
+                            self.col_offset,
                             &line_num_str,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
@@ -252,7 +259,7 @@ impl View {
                     state = final_state;
                     Terminal::print_annotated_row_with_prefix(
                         draw_row,
-                        0,
+                        self.col_offset,
                         &line_num_str,
                         &annotated_string,
                         line_idx == self.text_location.line_idx,
@@ -271,7 +278,7 @@ impl View {
                     state = new_state;
                     Terminal::print_annotated_row_with_prefix(
                         draw_row,
-                        0,
+                        self.col_offset,
                         &line_num_str,
                         &annotated_string,
                         line_idx == self.text_location.line_idx,
@@ -279,14 +286,14 @@ impl View {
                 }
             } else {
                 let empty_prefix = " ".repeat(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
-                Self::render_line(draw_row, &format!("{empty_prefix}~"))?;
+                self.render_line(draw_row, &format!("{empty_prefix}~"))?;
                 state = HighlightState::default();
             }
         }
         Ok(())
     }
 
-    fn draw_welcome_message_at(at: usize, width: usize) -> Result<(), Error> {
+    fn draw_welcome_message_at(&self, at: usize, width: usize) -> Result<(), Error> {
         let mut welcome_message = format!("{NAME} -- version {VERSION}");
         let gutter_total = Self::GUTTER_WIDTH + Self::GUTTER_PADDING;
         let content_width = width.saturating_sub(gutter_total);
@@ -300,18 +307,18 @@ impl View {
             welcome_message = format!("{prefix}{welcome_message}");
         }
         welcome_message.truncate(width);
-        Self::render_line(at, &welcome_message)?;
+        self.render_line(at, &welcome_message)?;
         Ok(())
     }
 
-    fn draw_empty_row(at: usize) -> Result<(), Error> {
+    fn draw_empty_row(&self, at: usize) -> Result<(), Error> {
         let empty_prefix = " ".repeat(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
-        Self::render_line(at, &format!("{empty_prefix}~"))?;
+        self.render_line(at, &format!("{empty_prefix}~"))?;
         Ok(())
     }
 
-    fn render_line(at: usize, line_text: &str) -> Result<(), Error> {
-        Terminal::print_row(at, 0, line_text)
+    fn render_line(&self, at: usize, line_text: &str) -> Result<(), Error> {
+        Terminal::print_row(at, self.col_offset, line_text)
     }
 
     pub fn caret_position(&self) -> Position {
@@ -321,7 +328,7 @@ impl View {
 
         let gutter_total = Self::GUTTER_WIDTH + Self::GUTTER_PADDING;
         Position {
-            col: col + gutter_total,
+            col: col + gutter_total + self.col_offset,
             row,
         }
     }
