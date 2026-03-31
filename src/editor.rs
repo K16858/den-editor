@@ -25,7 +25,10 @@ use self::command::{
     Command::{self, Edit, Move, System},
     Edit::InsertNewline,
     MoveDirection,
-    System::{Dismiss, FocusSidebar, FocusView, Quit, Replace, Resize, Save, Search, ToggleSidebar},
+    System::{
+        CreateFile, CreateFolder, Dismiss, FocusSidebar, FocusView, Quit, Replace, Resize, Save,
+        Search, ToggleSidebar,
+    },
 };
 
 pub const NAME: &str = env!("CARGO_PKG_NAME");
@@ -39,6 +42,8 @@ enum PromptType {
     Save,
     ReplaceSearch,
     Replace,
+    CreateFile,
+    CreateFolder,
     #[default]
     None,
 }
@@ -192,6 +197,8 @@ impl Editor {
             PromptType::Save => self.process_command_during_save(command),
             PromptType::ReplaceSearch => self.process_command_during_replace_search(command),
             PromptType::Replace => self.process_command_during_replace(command),
+            PromptType::CreateFile => self.process_command_during_create(command, false),
+            PromptType::CreateFolder => self.process_command_during_create(command, true),
             PromptType::None => self.process_command_no_prompt(command),
         }
     }
@@ -255,12 +262,13 @@ impl Editor {
             System(Search) => self.set_prompt(PromptType::Search),
             System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
             System(Save) => self.handle_save(),
+            System(CreateFile) => self.set_prompt(PromptType::CreateFile),
+            System(CreateFolder) => self.set_prompt(PromptType::CreateFolder),
             Edit(edit_command) => {
                 if let Some(err) = self.view.handle_edit_command(edit_command) {
                     self.update_message(err);
                 }
             }
-
             Move(move_command) => self.view.handle_move_command(move_command),
         }
     }
@@ -343,7 +351,7 @@ impl Editor {
             }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView,
+                    | FocusView | CreateFile | CreateFolder,
             )
             | Move(_) => {}
         }
@@ -359,7 +367,9 @@ impl Editor {
                     | Replace
                     | ToggleSidebar
                     | FocusSidebar
-                    | FocusView,
+                    | FocusView
+                    | CreateFile
+                    | CreateFolder,
             )
             | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
@@ -405,7 +415,7 @@ impl Editor {
             }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView,
+                    | FocusView | CreateFile | CreateFolder,
             )
             | Move(_) => {}
         }
@@ -432,10 +442,79 @@ impl Editor {
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView,
+                    | FocusView | CreateFile | CreateFolder,
             )
             | Move(_) => {}
         }
+    }
+
+    fn process_command_during_create(&mut self, command: Command, is_dir: bool) {
+        match command {
+            System(Dismiss) => {
+                self.set_prompt(PromptType::None);
+                self.update_message("Cancelled.");
+            }
+            Edit(InsertNewline) => {
+                let name = self.command_bar.value();
+                self.set_prompt(PromptType::None);
+                if name.is_empty() {
+                    self.update_message("Name is empty.");
+                    return;
+                }
+                let base = self.create_base_dir();
+                let target = base.join(&name);
+                if is_dir {
+                    match std::fs::create_dir_all(&target) {
+                        Ok(()) => {
+                            self.update_message(&format!("Created: {name}"));
+                            self.sidebar.rebuild();
+                            self.sidebar.mark_redraw(true);
+                        }
+                        Err(e) => self.update_message(&format!("Error: {e}")),
+                    }
+                } else {
+                    if let Some(parent) = target.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&target)
+                    {
+                        Ok(_) => {
+                            self.update_message(&format!("Created: {name}"));
+                            self.sidebar.rebuild();
+                            self.sidebar.mark_redraw(true);
+                            let path_str = target.to_string_lossy().to_string();
+                            if let Err(e) = self.view.load(&path_str) {
+                                self.update_message(&format!("Open error: {e}"));
+                            } else {
+                                self.status_bar.mark_redraw(true);
+                            }
+                        }
+                        Err(e) => self.update_message(&format!("Error: {e}")),
+                    }
+                }
+            }
+            Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
+            System(
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                    | FocusView | CreateFile | CreateFolder,
+            )
+            | Move(_) => {}
+        }
+    }
+
+    fn create_base_dir(&self) -> std::path::PathBuf {
+        if let Some(p) = self.sidebar.selected_path() {
+            if p.is_dir() {
+                return p;
+            }
+            if let Some(parent) = p.parent() {
+                return parent.to_path_buf();
+            }
+        }
+        self.sidebar.workspace_root().to_path_buf()
     }
 
     // =========================================
@@ -456,6 +535,12 @@ impl Editor {
             }
             PromptType::Replace => {
                 self.command_bar.set_prompt("Replace with: ");
+            }
+            PromptType::CreateFile => {
+                self.command_bar.set_prompt("New file name: ");
+            }
+            PromptType::CreateFolder => {
+                self.command_bar.set_prompt("New folder name: ");
             }
         }
         self.command_bar.clear_value();
