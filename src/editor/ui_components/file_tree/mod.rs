@@ -49,6 +49,14 @@ impl FileTree {
         self.pending_open.take()
     }
 
+    pub fn selected_path(&self) -> Option<PathBuf> {
+        self.visible.get(self.selected).map(|e| e.path.clone())
+    }
+
+    pub fn workspace_root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn rebuild(&mut self) {
         let sel = self.visible.get(self.selected).map(|e| e.path.clone());
         self.visible.clear();
