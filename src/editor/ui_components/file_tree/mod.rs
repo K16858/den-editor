@@ -28,6 +28,7 @@ pub struct FileTree {
 
 impl FileTree {
     pub const WIDTH: usize = 24;
+    const CONTENT_WIDTH: usize = Self::WIDTH - 1;
 
     pub fn new(root: PathBuf) -> Self {
         let mut tree = Self {
@@ -183,11 +184,11 @@ fn format_line(entry: &VisibleEntry, is_selected: bool) -> String {
     } else {
         format!("{indent}{}", entry.name)
     };
-    let padded = pad_or_truncate(&label, FileTree::WIDTH);
+    let padded = pad_or_truncate(&label, FileTree::CONTENT_WIDTH);
     if is_selected {
-        format!("{Reverse}{padded}{Reset}")
+        format!("{Reverse}{padded}{Reset}|")
     } else {
-        padded
+        format!("{padded}|")
     }
 }
 
@@ -233,7 +234,7 @@ impl UIComponent for FileTree {
             let line = if let Some(entry) = self.visible.get(idx) {
                 format_line(entry, idx == self.selected)
             } else {
-                " ".repeat(Self::WIDTH)
+                format!("{}|", " ".repeat(Self::CONTENT_WIDTH))
             };
             Terminal::move_caret_to(Position {
                 row: draw_row,
