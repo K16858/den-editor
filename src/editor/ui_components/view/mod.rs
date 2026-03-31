@@ -184,6 +184,7 @@ impl View {
                         state = new_state;
                         Terminal::print_annotated_row_with_prefix(
                             draw_row,
+                            0,
                             &line_num_str,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
@@ -207,6 +208,7 @@ impl View {
                         state = final_state;
                         Terminal::print_annotated_row_with_prefix(
                             draw_row,
+                            0,
                             &line_num_str,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
@@ -225,6 +227,7 @@ impl View {
                         state = new_state;
                         Terminal::print_annotated_row_with_prefix(
                             draw_row,
+                            0,
                             &line_num_str,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
@@ -249,6 +252,7 @@ impl View {
                     state = final_state;
                     Terminal::print_annotated_row_with_prefix(
                         draw_row,
+                        0,
                         &line_num_str,
                         &annotated_string,
                         line_idx == self.text_location.line_idx,
@@ -267,6 +271,7 @@ impl View {
                     state = new_state;
                     Terminal::print_annotated_row_with_prefix(
                         draw_row,
+                        0,
                         &line_num_str,
                         &annotated_string,
                         line_idx == self.text_location.line_idx,
@@ -306,7 +311,7 @@ impl View {
     }
 
     fn render_line(at: usize, line_text: &str) -> Result<(), Error> {
-        Terminal::print_row(at, line_text)
+        Terminal::print_row(at, 0, line_text)
     }
 
     pub fn caret_position(&self) -> Position {

@@ -44,11 +44,6 @@ impl Terminal {
         Ok(())
     }
 
-    pub fn clear_line() -> Result<(), Error> {
-        Self::queue_command(Clear(ClearType::CurrentLine))?;
-        Ok(())
-    }
-
     pub fn move_caret_to(position: Position) -> Result<(), Error> {
         Self::queue_command(MoveTo(
             u16::try_from(position.col).unwrap_or(u16::MAX),
@@ -94,12 +89,13 @@ impl Terminal {
 
     pub fn print_annotated_row_with_prefix(
         row: usize,
+        col_start: usize,
         prefix: &str,
         annotated_string: &AnnotatedString,
         highlight_prefix: bool,
     ) -> Result<(), Error> {
-        Self::move_caret_to(Position { row, col: 0 })?;
-        Self::clear_line()?;
+        Self::move_caret_to(Position { row, col: col_start })?;
+        Self::queue_command(Clear(ClearType::UntilNewLine))?;
         if !highlight_prefix {
             Self::queue_command(SetForegroundColor(Color::DarkGrey))?;
         }
@@ -137,7 +133,11 @@ impl Terminal {
 
     pub fn print_inverted_row(row: usize, line_text: &str) -> Result<(), Error> {
         let width = Self::size()?.width;
-        Self::print_row(row, &format!("{Reverse}{line_text:width$.width$}{Reset}"))
+        Self::print_row(
+            row,
+            0,
+            &format!("{Reverse}{line_text:width$.width$}{Reset}"),
+        )
     }
 
     pub fn print(string: &str) -> Result<(), Error> {
@@ -145,9 +145,9 @@ impl Terminal {
         Ok(())
     }
 
-    pub fn print_row(row: usize, line_text: &str) -> Result<(), Error> {
-        Self::move_caret_to(Position { row, col: 0 })?;
-        Self::clear_line()?;
+    pub fn print_row(row: usize, col_start: usize, line_text: &str) -> Result<(), Error> {
+        Self::move_caret_to(Position { row, col: col_start })?;
+        Self::queue_command(Clear(ClearType::UntilNewLine))?;
         Self::print(line_text)?;
         Ok(())
     }
