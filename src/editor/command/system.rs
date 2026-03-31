@@ -13,6 +13,7 @@ pub enum System {
     Search,
     Replace,
     ToggleSidebar,
+    FocusSidebar,
 }
 
 impl TryFrom<KeyEvent> for System {
@@ -22,7 +23,12 @@ impl TryFrom<KeyEvent> for System {
             code, modifiers, ..
         } = event;
 
-        if modifiers == KeyModifiers::CONTROL {
+        if modifiers == KeyModifiers::CONTROL | KeyModifiers::SHIFT {
+            match code {
+                Char('e' | 'E') => Ok(Self::FocusSidebar),
+                _ => Err(format!("Unsupported CONTROL+SHIFT+{code:?} combination")),
+            }
+        } else if modifiers == KeyModifiers::CONTROL {
             match code {
                 Char('q') => Ok(Self::Quit),
                 Char('s') => Ok(Self::Save),
