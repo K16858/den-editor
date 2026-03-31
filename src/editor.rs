@@ -6,7 +6,7 @@ mod annotated_string;
 use annotated_string::{AnnotatedString, AnnotationType};
 pub mod highlight;
 mod terminal;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, read};
+use crossterm::event::{Event, KeyEvent, KeyEventKind, read};
 use position::Position;
 use size::Size;
 mod document_status;
@@ -25,7 +25,7 @@ use self::command::{
     Command::{self, Edit, Move, System},
     Edit::InsertNewline,
     MoveDirection,
-    System::{Dismiss, Quit, Replace, Resize, Save, Search, ToggleSidebar},
+    System::{Dismiss, FocusSidebar, Quit, Replace, Resize, Save, Search, ToggleSidebar},
 };
 
 pub const NAME: &str = env!("CARGO_PKG_NAME");
@@ -170,23 +170,6 @@ impl Editor {
             return;
         }
 
-        if let Event::Key(KeyEvent {
-            code: KeyCode::Tab,
-            kind,
-            modifiers,
-            ..
-        }) = &event
-            && *kind == KeyEventKind::Press
-            && *modifiers == KeyModifiers::NONE
-            && self.sidebar_visible
-            && !self.in_prompt()
-        {
-            self.sidebar_focus = !self.sidebar_focus;
-            self.sidebar.mark_redraw(true);
-            self.view.mark_redraw(true);
-            return;
-        }
-
         let should_process = match &event {
             Event::Key(KeyEvent { kind, .. }) => kind == &KeyEventKind::Press,
             Event::Resize(_, _) => true,
@@ -248,6 +231,10 @@ impl Editor {
                     self.toggle_sidebar();
                     true
                 }
+                System(FocusSidebar) => {
+                    self.focus_sidebar();
+                    true
+                }
                 System(_) => false,
             };
             if tree_consumed {
@@ -258,6 +245,7 @@ impl Editor {
         match command {
             System(Quit | Resize(_)) => {}
             System(ToggleSidebar) => self.toggle_sidebar(),
+            System(FocusSidebar) => self.focus_sidebar(),
             System(Dismiss) => self.view.clear_selection(),
             System(Search) => self.set_prompt(PromptType::Search),
             System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
@@ -281,6 +269,17 @@ impl Editor {
             self.sidebar_focus = false;
         }
         self.resize(self.terminal_size);
+        self.sidebar.mark_redraw(true);
+        self.view.mark_redraw(true);
+    }
+
+    fn focus_sidebar(&mut self) {
+        if !self.sidebar_visible {
+            self.sidebar_visible = true;
+            self.resize(self.terminal_size);
+        }
+        self.sidebar_focus = true;
+        self.sidebar.rebuild();
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
     }
@@ -331,13 +330,17 @@ impl Editor {
             {
                 self.view.search_prev();
             }
-            System(Quit | Resize(_) | Search | Save | Replace | ToggleSidebar) | Move(_) => {}
+            System(Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar)
+            | Move(_) => {}
         }
     }
 
     fn process_command_during_save(&mut self, command: Command) {
         match command {
-            System(Quit | Resize(_) | Search | Save | Replace | ToggleSidebar) | Move(_) => {} // Not applicable during save, Resize already handled at this stage
+            System(
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar,
+            )
+            | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
                 self.set_prompt(PromptType::None);
                 self.update_message("Save aborted.");
@@ -379,7 +382,8 @@ impl Editor {
             {
                 self.view.search_prev();
             }
-            System(Quit | Resize(_) | Search | Save | Replace | ToggleSidebar) | Move(_) => {}
+            System(Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar)
+            | Move(_) => {}
         }
     }
 
@@ -402,7 +406,8 @@ impl Editor {
                 }
             }
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
-            System(Quit | Resize(_) | Search | Save | Replace | ToggleSidebar) | Move(_) => {}
+            System(Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar)
+            | Move(_) => {}
         }
     }
 
