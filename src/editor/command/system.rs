@@ -15,6 +15,8 @@ pub enum System {
     ToggleSidebar,
     FocusSidebar,
     FocusView,
+    CreateFile,
+    CreateFolder,
 }
 
 impl TryFrom<KeyEvent> for System {
@@ -27,6 +29,7 @@ impl TryFrom<KeyEvent> for System {
         if modifiers == KeyModifiers::CONTROL | KeyModifiers::SHIFT {
             match code {
                 Char('e' | 'E') => Ok(Self::FocusSidebar),
+                Char('n' | 'N') => Ok(Self::CreateFolder),
                 _ => Err(format!("Unsupported CONTROL+SHIFT+{code:?} combination")),
             }
         } else if modifiers == KeyModifiers::CONTROL {
@@ -37,6 +40,7 @@ impl TryFrom<KeyEvent> for System {
                 Char('h') => Ok(Self::Replace),
                 Char('b') => Ok(Self::ToggleSidebar),
                 Char('1') => Ok(Self::FocusView),
+                Char('n') => Ok(Self::CreateFile),
                 _ => Err(format!("Unsupported CONTROL+{code:?} combination")),
             }
         } else if modifiers == KeyModifiers::NONE && matches!(code, Esc) {
