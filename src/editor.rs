@@ -6,7 +6,7 @@ mod annotated_string;
 use annotated_string::{AnnotatedString, AnnotationType};
 pub mod highlight;
 mod terminal;
-use crossterm::event::{Event, KeyEvent, KeyEventKind, read};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, read};
 use position::Position;
 use size::Size;
 mod document_status;
@@ -15,10 +15,11 @@ use std::{
     env,
     io::Error,
     panic::{set_hook, take_hook},
+    path::{Path, PathBuf},
 };
 use terminal::Terminal;
 mod command;
-use ui_components::{CommandBar, MessageBar, StatusBar, UIComponent, View};
+use ui_components::{CommandBar, FileTree, MessageBar, StatusBar, UIComponent, View};
 mod ui_components;
 use self::command::{
     Command::{self, Edit, Move, System},
@@ -48,7 +49,6 @@ impl PromptType {
     }
 }
 
-#[derive(Default)]
 pub struct Editor {
     should_quit: bool,
     view: View,
@@ -60,6 +60,9 @@ pub struct Editor {
     replace_query: String,
     title: String,
     quit_times: u8,
+    sidebar: FileTree,
+    sidebar_visible: bool,
+    sidebar_focus: bool,
 }
 
 impl Editor {
@@ -71,16 +74,59 @@ impl Editor {
         }));
         Terminal::initialize()?;
 
-        let mut editor = Self::default();
+        let cwd = env::current_dir()?;
+        let mut workspace_root = cwd.clone();
+        let mut load_path: Option<PathBuf> = None;
+        let mut sidebar_visible = false;
+        let mut sidebar_focus = false;
+        let args: Vec<String> = env::args().collect();
+
+        if let Some(arg) = args.get(1) {
+            let p = PathBuf::from(arg);
+            if p.exists() {
+                if p.is_dir() {
+                    workspace_root = p.canonicalize().unwrap_or(p);
+                    sidebar_visible = true;
+                    sidebar_focus = false;
+                } else if p.is_file() {
+                    let parent = p.parent().unwrap_or_else(|| Path::new("."));
+                    workspace_root = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
+                    load_path = Some(p.canonicalize().unwrap_or(p));
+                }
+            }
+        }
+
+        let sidebar = FileTree::new(workspace_root);
+
+        let mut editor = Self {
+            should_quit: false,
+            view: View::default(),
+            status_bar: StatusBar::default(),
+            terminal_size: Size::default(),
+            message_bar: MessageBar::default(),
+            command_bar: CommandBar::default(),
+            prompt_type: PromptType::None,
+            replace_query: String::new(),
+            title: String::new(),
+            quit_times: 0,
+            sidebar,
+            sidebar_visible,
+            sidebar_focus,
+        };
+
         let size = Terminal::size().unwrap_or_default();
         editor.resize(size);
-        // editor.update_message("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-C = copy | Ctrl-X = cut | Ctrl-V = paste | Ctrl-F = find | Ctrl-Z = undo | Ctrl-Shift-Z = redo | Ctrl-A = select all");
 
-        let args: Vec<String> = env::args().collect();
-        if let Some(file_name) = args.get(1)
-            && editor.view.load(file_name).is_err()
-        {
-            editor.update_message(&format!("ERROR: Could not open file: {file_name}"));
+        if let Some(path) = load_path {
+            let s = path.to_string_lossy();
+            if editor.view.load(&s).is_err() {
+                editor.update_message(&format!("ERROR: Could not open file: {s}"));
+            }
+        } else if let Some(arg) = args.get(1) {
+            let p = PathBuf::from(arg);
+            if !p.exists() {
+                editor.update_message(&format!("ERROR: Path does not exist: {arg}"));
+            }
         }
 
         editor.refresh_status();
@@ -108,15 +154,34 @@ impl Editor {
     // Event
     // =========================================
     fn evaluate_event(&mut self, event: Event) {
-        if let Event::Paste(data) = event {
+        if let Event::Paste(ref data) = event {
             if self.prompt_type.is_none() {
-                self.view.paste_text(&data);
+                if !(self.sidebar_visible && self.sidebar_focus) {
+                    self.view.paste_text(data);
+                }
             } else {
                 for ch in data.chars() {
                     self.command_bar
                         .handle_edit_command(command::Edit::Insert(ch));
                 }
             }
+            return;
+        }
+
+        if let Event::Key(KeyEvent {
+            code: KeyCode::Tab,
+            kind,
+            modifiers,
+            ..
+        }) = &event
+            && *kind == KeyEventKind::Press
+            && *modifiers == KeyModifiers::NONE
+            && self.sidebar_visible
+            && !self.in_prompt()
+        {
+            self.sidebar_focus = !self.sidebar_focus;
+            self.sidebar.mark_redraw(true);
+            self.view.mark_redraw(true);
             return;
         }
 
@@ -156,9 +221,41 @@ impl Editor {
         }
         self.reset_quit_times();
 
+        if self.sidebar_visible && self.sidebar_focus {
+            let tree_consumed = match &command {
+                Move(m) if !m.is_selection => {
+                    if self.sidebar.handle_move(m.direction) {
+                        self.sidebar.mark_redraw(true);
+                    }
+                    true
+                }
+                Edit(InsertNewline) => {
+                    self.sidebar.handle_enter();
+                    self.sidebar.mark_redraw(true);
+                    self.open_from_sidebar_selection();
+                    true
+                }
+                Move(_) | Edit(_) => true,
+                System(Dismiss) => {
+                    self.sidebar_focus = false;
+                    self.sidebar.mark_redraw(true);
+                    self.view.mark_redraw(true);
+                    true
+                }
+                System(ToggleSidebar) => {
+                    self.toggle_sidebar();
+                    true
+                }
+                System(_) => false,
+            };
+            if tree_consumed {
+                return;
+            }
+        }
+
         match command {
             System(Quit | Resize(_)) => {}
-            System(ToggleSidebar) => {}
+            System(ToggleSidebar) => self.toggle_sidebar(),
             System(Dismiss) => self.view.clear_selection(),
             System(Search) => self.set_prompt(PromptType::Search),
             System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
@@ -170,6 +267,37 @@ impl Editor {
             }
 
             Move(move_command) => self.view.handle_move_command(move_command),
+        }
+    }
+
+    fn toggle_sidebar(&mut self) {
+        self.sidebar_visible = !self.sidebar_visible;
+        if self.sidebar_visible {
+            self.sidebar_focus = true;
+            self.sidebar.rebuild();
+        } else {
+            self.sidebar_focus = false;
+        }
+        self.resize(self.terminal_size);
+        self.sidebar.mark_redraw(true);
+        self.view.mark_redraw(true);
+    }
+
+    fn open_from_sidebar_selection(&mut self) {
+        if let Some(path) = self.sidebar.take_pending_open() {
+            let s = path.to_string_lossy();
+            match self.view.load(&s) {
+                Ok(()) => {
+                    self.sidebar_focus = false;
+                    self.refresh_status();
+                    self.update_message("");
+                }
+                Err(e) => {
+                    self.update_message(&format!("ERROR: Could not open file: {e}"));
+                }
+            }
+            self.view.mark_redraw(true);
+            self.sidebar.mark_redraw(true);
         }
     }
 
@@ -363,9 +491,20 @@ impl Editor {
 
     fn resize(&mut self, size: Size) {
         self.terminal_size = size;
+        let main_height = size.height.saturating_sub(2);
+        let sidebar_w = if self.sidebar_visible {
+            FileTree::WIDTH
+        } else {
+            0
+        };
+        self.view.set_col_offset(sidebar_w);
         self.view.resize(Size {
-            height: size.height.saturating_sub(2),
-            width: size.width,
+            height: main_height,
+            width: size.width.saturating_sub(sidebar_w),
+        });
+        self.sidebar.resize(Size {
+            height: main_height,
+            width: FileTree::WIDTH,
         });
         let bar_size = Size {
             height: 1,
@@ -392,6 +531,9 @@ impl Editor {
                 .render(self.terminal_size.height.saturating_sub(2));
         }
         if self.terminal_size.height > 2 {
+            if self.sidebar_visible {
+                self.sidebar.render(0);
+            }
             self.view.render(0);
         }
 
@@ -400,6 +542,8 @@ impl Editor {
                 row: bottom_bar_row,
                 col: self.command_bar.caret_position_col(),
             }
+        } else if self.sidebar_visible && self.sidebar_focus {
+            self.sidebar.caret_position(0)
         } else {
             self.view.caret_position()
         };

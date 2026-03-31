@@ -52,20 +52,16 @@ impl FileTree {
         self.pending_open.take()
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     pub fn rebuild(&mut self) {
         let sel = self.visible.get(self.selected).map(|e| e.path.clone());
         self.visible.clear();
         let root = self.root.clone();
         let _ = self.append_children(&root, 0);
         self.clamp_selected();
-        if let Some(p) = sel {
-            if let Some(i) = self.visible.iter().position(|e| e.path == p) {
-                self.selected = i;
-            }
+        if let Some(p) = sel
+            && let Some(i) = self.visible.iter().position(|e| e.path == p)
+        {
+            self.selected = i;
         }
         self.ensure_scroll();
     }
