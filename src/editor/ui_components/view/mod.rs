@@ -1107,6 +1107,10 @@ impl View {
     pub fn load(&mut self, file_name: &str) -> Result<(), Error> {
         let buffer = Buffer::load(file_name)?;
         self.buffer = buffer;
+        self.text_location = Location::default();
+        self.scroll_offset = Position::default();
+        self.selection = None;
+        self.search_info = None;
         self.undo_history.clear_all();
         self.highlight_cache.clear();
         self.cache_version += 1;
