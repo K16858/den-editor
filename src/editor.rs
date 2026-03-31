@@ -24,7 +24,7 @@ use self::command::{
     Command::{self, Edit, Move, System},
     Edit::InsertNewline,
     MoveDirection,
-    System::{Dismiss, Quit, Replace, Resize, Save, Search},
+    System::{Dismiss, Quit, Replace, Resize, Save, Search, ToggleSidebar},
 };
 
 pub const NAME: &str = env!("CARGO_PKG_NAME");
@@ -158,6 +158,7 @@ impl Editor {
 
         match command {
             System(Quit | Resize(_)) => {}
+            System(ToggleSidebar) => {}
             System(Dismiss) => self.view.clear_selection(),
             System(Search) => self.set_prompt(PromptType::Search),
             System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
@@ -200,13 +201,13 @@ impl Editor {
             {
                 self.view.search_prev();
             }
-            System(Quit | Resize(_) | Search | Save | Replace) | Move(_) => {}
+            System(Quit | Resize(_) | Search | Save | Replace | ToggleSidebar) | Move(_) => {}
         }
     }
 
     fn process_command_during_save(&mut self, command: Command) {
         match command {
-            System(Quit | Resize(_) | Search | Save | Replace) | Move(_) => {} // Not applicable during save, Resize already handled at this stage
+            System(Quit | Resize(_) | Search | Save | Replace | ToggleSidebar) | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
                 self.set_prompt(PromptType::None);
                 self.update_message("Save aborted.");
@@ -248,7 +249,7 @@ impl Editor {
             {
                 self.view.search_prev();
             }
-            System(Quit | Resize(_) | Search | Save | Replace) | Move(_) => {}
+            System(Quit | Resize(_) | Search | Save | Replace | ToggleSidebar) | Move(_) => {}
         }
     }
 
@@ -271,7 +272,7 @@ impl Editor {
                 }
             }
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
-            System(Quit | Resize(_) | Search | Save | Replace) | Move(_) => {}
+            System(Quit | Resize(_) | Search | Save | Replace | ToggleSidebar) | Move(_) => {}
         }
     }
 

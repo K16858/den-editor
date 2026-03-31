@@ -12,6 +12,7 @@ pub enum System {
     Dismiss,
     Search,
     Replace,
+    ToggleSidebar,
 }
 
 impl TryFrom<KeyEvent> for System {
@@ -27,6 +28,7 @@ impl TryFrom<KeyEvent> for System {
                 Char('s') => Ok(Self::Save),
                 Char('f') => Ok(Self::Search),
                 Char('h') => Ok(Self::Replace),
+                Char('b') => Ok(Self::ToggleSidebar),
                 _ => Err(format!("Unsupported CONTROL+{code:?} combination")),
             }
         } else if modifiers == KeyModifiers::NONE && matches!(code, Esc) {
