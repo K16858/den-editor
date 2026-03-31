@@ -14,6 +14,7 @@ pub enum System {
     Replace,
     ToggleSidebar,
     FocusSidebar,
+    FocusView,
 }
 
 impl TryFrom<KeyEvent> for System {
@@ -35,6 +36,7 @@ impl TryFrom<KeyEvent> for System {
                 Char('f') => Ok(Self::Search),
                 Char('h') => Ok(Self::Replace),
                 Char('b') => Ok(Self::ToggleSidebar),
+                Char('1') => Ok(Self::FocusView),
                 _ => Err(format!("Unsupported CONTROL+{code:?} combination")),
             }
         } else if modifiers == KeyModifiers::NONE && matches!(code, Esc) {

@@ -25,7 +25,7 @@ use self::command::{
     Command::{self, Edit, Move, System},
     Edit::InsertNewline,
     MoveDirection,
-    System::{Dismiss, FocusSidebar, Quit, Replace, Resize, Save, Search, ToggleSidebar},
+    System::{Dismiss, FocusSidebar, FocusView, Quit, Replace, Resize, Save, Search, ToggleSidebar},
 };
 
 pub const NAME: &str = env!("CARGO_PKG_NAME");
@@ -235,6 +235,10 @@ impl Editor {
                     self.focus_sidebar();
                     true
                 }
+                System(FocusView) => {
+                    self.focus_view();
+                    true
+                }
                 System(_) => false,
             };
             if tree_consumed {
@@ -246,6 +250,7 @@ impl Editor {
             System(Quit | Resize(_)) => {}
             System(ToggleSidebar) => self.toggle_sidebar(),
             System(FocusSidebar) => self.focus_sidebar(),
+            System(FocusView) => self.focus_view(),
             System(Dismiss) => self.view.clear_selection(),
             System(Search) => self.set_prompt(PromptType::Search),
             System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
@@ -280,6 +285,12 @@ impl Editor {
         }
         self.sidebar_focus = true;
         self.sidebar.rebuild();
+        self.sidebar.mark_redraw(true);
+        self.view.mark_redraw(true);
+    }
+
+    fn focus_view(&mut self) {
+        self.sidebar_focus = false;
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
     }
@@ -330,7 +341,10 @@ impl Editor {
             {
                 self.view.search_prev();
             }
-            System(Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar)
+            System(
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                    | FocusView,
+            )
             | Move(_) => {}
         }
     }
@@ -338,7 +352,14 @@ impl Editor {
     fn process_command_during_save(&mut self, command: Command) {
         match command {
             System(
-                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar,
+                Quit
+                    | Resize(_)
+                    | Search
+                    | Save
+                    | Replace
+                    | ToggleSidebar
+                    | FocusSidebar
+                    | FocusView,
             )
             | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
@@ -382,7 +403,10 @@ impl Editor {
             {
                 self.view.search_prev();
             }
-            System(Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar)
+            System(
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                    | FocusView,
+            )
             | Move(_) => {}
         }
     }
@@ -406,7 +430,10 @@ impl Editor {
                 }
             }
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
-            System(Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar)
+            System(
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                    | FocusView,
+            )
             | Move(_) => {}
         }
     }
