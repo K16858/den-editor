@@ -20,6 +20,7 @@ use std::{
 use terminal::Terminal;
 mod command;
 mod terminal_pane;
+use terminal_pane::TerminalPane;
 use ui_components::{CommandBar, FileTree, MessageBar, StatusBar, UIComponent, View};
 mod ui_components;
 use self::command::{
@@ -69,6 +70,9 @@ pub struct Editor {
     sidebar: FileTree,
     sidebar_visible: bool,
     sidebar_focus: bool,
+    terminal_pane: TerminalPane,
+    terminal_visible: bool,
+    terminal_focus: bool,
 }
 
 impl Editor {
@@ -120,6 +124,9 @@ impl Editor {
             sidebar,
             sidebar_visible,
             sidebar_focus,
+            terminal_pane: TerminalPane::new(),
+            terminal_visible: false,
+            terminal_focus: false,
         };
 
         let size = Terminal::size().unwrap_or_default();
