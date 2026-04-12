@@ -319,8 +319,10 @@ impl Editor {
         if self.terminal_visible {
             self.terminal_focus = true;
             self.sidebar_focus = false;
+            self.start_terminal_if_needed();
         } else {
             self.terminal_focus = false;
+            self.terminal_pane.stop();
         }
         let size = self.terminal_size;
         self.resize(size);
@@ -331,6 +333,7 @@ impl Editor {
     fn focus_terminal(&mut self) {
         if !self.terminal_visible {
             self.terminal_visible = true;
+            self.start_terminal_if_needed();
             let size = self.terminal_size;
             self.resize(size);
         }
@@ -338,6 +341,18 @@ impl Editor {
         self.sidebar_focus = false;
         self.terminal_pane.mark_redraw(true);
         self.view.mark_redraw(true);
+    }
+
+    fn start_terminal_if_needed(&mut self) {
+        if self.terminal_pane.is_running() {
+            return;
+        }
+        let cwd = self.sidebar.workspace_root().to_path_buf();
+        let cols = self.terminal_size.width as u16;
+        let rows = self.terminal_pane.rows as u16;
+        if let Err(e) = self.terminal_pane.start(&cwd, cols, rows) {
+            self.update_message(&format!("Terminal error: {e}"));
+        }
     }
 
     fn open_from_sidebar_selection(&mut self) {
