@@ -10,3 +10,6 @@ pub use reader::{PtyEvent, ReaderThread};
 mod buffer;
 #[allow(unused_imports)]
 pub use buffer::{Cell, Row, ScrollbackBuffer};
+mod vt;
+#[allow(unused_imports)]
+pub use vt::VtParser;
