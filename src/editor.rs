@@ -618,7 +618,12 @@ impl Editor {
 
     fn resize(&mut self, size: Size) {
         self.terminal_size = size;
-        let main_height = size.height.saturating_sub(2);
+        let term_rows = if self.terminal_visible {
+            self.terminal_pane.rows
+        } else {
+            0
+        };
+        let main_height = size.height.saturating_sub(2).saturating_sub(term_rows);
         let sidebar_w = if self.sidebar_visible {
             FileTree::WIDTH
         } else {
@@ -633,6 +638,10 @@ impl Editor {
             height: main_height,
             width: FileTree::WIDTH,
         });
+        self.terminal_pane.size = Size {
+            height: term_rows,
+            width: size.width,
+        };
         let bar_size = Size {
             height: 1,
             width: size.width,
