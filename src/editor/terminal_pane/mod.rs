@@ -13,3 +13,6 @@ pub use buffer::{Cell, Row, ScrollbackBuffer};
 mod vt;
 #[allow(unused_imports)]
 pub use vt::VtParser;
+mod pane;
+#[allow(unused_imports)]
+pub use pane::TerminalPane;
