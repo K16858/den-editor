@@ -19,6 +19,7 @@ use std::{
 };
 use terminal::Terminal;
 mod command;
+mod terminal_pane;
 use ui_components::{CommandBar, FileTree, MessageBar, StatusBar, UIComponent, View};
 mod ui_components;
 use self::command::{
