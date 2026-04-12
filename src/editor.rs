@@ -6,7 +6,7 @@ mod annotated_string;
 use annotated_string::{AnnotatedString, AnnotationType};
 pub mod highlight;
 mod terminal;
-use crossterm::event::{Event, KeyEvent, KeyEventKind, read};
+use crossterm::event::{Event, KeyEvent, KeyEventKind, KeyModifiers, read};
 use position::Position;
 use size::Size;
 mod document_status;
@@ -56,6 +56,7 @@ impl PromptType {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct Editor {
     should_quit: bool,
     view: View,
@@ -150,6 +151,7 @@ impl Editor {
 
     pub fn run(&mut self) {
         loop {
+            self.terminal_pane.poll();
             self.refresh_screen();
             if self.should_quit {
                 break;
@@ -160,6 +162,7 @@ impl Editor {
                     self.update_message(&format!("Input error: {err}"));
                 }
             }
+            self.terminal_pane.poll();
             let status = self.view.get_status();
             self.status_bar.update_status(status);
         }
@@ -171,7 +174,9 @@ impl Editor {
     fn evaluate_event(&mut self, event: Event) {
         if let Event::Paste(ref data) = event {
             if self.prompt_type.is_none() {
-                if !(self.sidebar_visible && self.sidebar_focus) {
+                if self.terminal_visible && self.terminal_focus {
+                    let _ = self.terminal_pane.write(data.as_bytes());
+                } else if !(self.sidebar_visible && self.sidebar_focus) {
                     self.view.paste_text(data);
                 }
             } else {
@@ -179,6 +184,49 @@ impl Editor {
                     self.command_bar
                         .handle_edit_command(command::Edit::Insert(ch));
                 }
+            }
+            return;
+        }
+
+        if self.terminal_visible && self.terminal_focus && self.prompt_type.is_none() {
+            if let Event::Key(KeyEvent { code, modifiers, kind, .. }) = &event
+                && kind == &KeyEventKind::Press
+            {
+                use crossterm::event::KeyCode;
+                if let (KeyCode::Null | KeyCode::Char('@' | '2'), KeyModifiers::CONTROL) =
+                    (code, *modifiers)
+                {
+                    if let Ok(cmd) = Command::try_from(event) {
+                        self.process_command(cmd);
+                    }
+                    return;
+                }
+                if *modifiers == KeyModifiers::CONTROL {
+                    if let Ok(cmd) = Command::try_from(event.clone())
+                        && let System(Quit | FocusView | FocusTerminal | ToggleTerminal) = cmd
+                    {
+                        self.process_command(cmd);
+                        return;
+                    }
+                    if let KeyCode::Char('c') = code {
+                        let _ = self.terminal_pane.write(&[0x03]);
+                        return;
+                    }
+                    if let KeyCode::Char('d') = code {
+                        let _ = self.terminal_pane.write(&[0x04]);
+                        return;
+                    }
+                }
+                let bytes = key_event_to_bytes(*code, *modifiers);
+                if !bytes.is_empty() {
+                    let _ = self.terminal_pane.write(&bytes);
+                }
+                return;
+            }
+            if let Event::Resize(_, _) = &event
+                && let Ok(cmd) = Command::try_from(event)
+            {
+                self.process_command(cmd);
             }
             return;
         }
@@ -348,7 +396,9 @@ impl Editor {
             return;
         }
         let cwd = self.sidebar.workspace_root().to_path_buf();
+        #[allow(clippy::cast_possible_truncation)]
         let cols = self.terminal_size.width as u16;
+        #[allow(clippy::cast_possible_truncation)]
         let rows = self.terminal_pane.rows as u16;
         if let Err(e) = self.terminal_pane.start(&cwd, cols, rows) {
             self.update_message(&format!("Terminal error: {e}"));
@@ -764,5 +814,31 @@ impl Editor {
 impl Drop for Editor {
     fn drop(&mut self) {
         let _ = Terminal::terminate();
+    }
+}
+
+fn key_event_to_bytes(code: crossterm::event::KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
+    use crossterm::event::KeyCode;
+    if modifiers == KeyModifiers::NONE || modifiers == KeyModifiers::SHIFT {
+        match code {
+            KeyCode::Char(c) => {
+                let mut buf = [0u8; 4];
+                c.encode_utf8(&mut buf)[..c.len_utf8()].to_owned().into_bytes()
+            }
+            KeyCode::Enter => b"\r".to_vec(),
+            KeyCode::Backspace => b"\x7f".to_vec(),
+            KeyCode::Tab => b"\t".to_vec(),
+            KeyCode::Up => b"\x1b[A".to_vec(),
+            KeyCode::Down => b"\x1b[B".to_vec(),
+            KeyCode::Right => b"\x1b[C".to_vec(),
+            KeyCode::Left => b"\x1b[D".to_vec(),
+            KeyCode::Home => b"\x1b[H".to_vec(),
+            KeyCode::End => b"\x1b[F".to_vec(),
+            KeyCode::Delete => b"\x1b[3~".to_vec(),
+            KeyCode::Esc => b"\x1b".to_vec(),
+            _ => vec![],
+        }
+    } else {
+        vec![]
     }
 }

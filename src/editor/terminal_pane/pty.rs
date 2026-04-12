@@ -25,11 +25,11 @@ impl PtySession {
             .map_err(|e| io::Error::other(e.to_string()))?;
 
         let shell = default_shell();
-        let mut cmd = CommandBuilder::new(&shell);
-        cmd.cwd(cwd);
+        let mut builder = CommandBuilder::new(&shell);
+        builder.cwd(cwd);
 
         pair.slave
-            .spawn_command(cmd)
+            .spawn_command(builder)
             .map_err(|e| io::Error::other(e.to_string()))?;
 
         let reader = pair

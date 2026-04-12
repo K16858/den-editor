@@ -75,16 +75,12 @@ impl VtParser {
                                 buf.current_row_mut().clear();
                             }
                         }
-                        b'J' => {}
-                        b'A' => {}
                         b'B' => {
                             let n: usize = raw.parse().unwrap_or(1).max(1);
                             for _ in 0..n {
                                 buf.newline();
                             }
                         }
-                        b'C' | b'D' => {}
-                        b'H' | b'f' => {}
                         _ => {}
                     }
                     self.params.clear();

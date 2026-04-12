@@ -112,7 +112,7 @@ impl TerminalPane {
         let h = self.rows;
         let w = self.size.width;
         let total = self.buffer.len();
-        let start = if total > h { total - h } else { 0 };
+        let start = total.saturating_sub(h);
 
         for row in 0..h {
             let screen_row = origin_y + row;
@@ -144,8 +144,7 @@ impl TerminalPane {
             let used = self
                 .buffer
                 .row(start + row)
-                .map(|r| r.cells.len())
-                .unwrap_or(0);
+                .map_or(0, |r| r.cells.len());
             if used < w {
                 Terminal::print(&" ".repeat(w - used))?;
             }
