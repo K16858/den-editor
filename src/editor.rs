@@ -817,6 +817,7 @@ impl Editor {
 
 impl Drop for Editor {
     fn drop(&mut self) {
+        self.terminal_pane.stop();
         let _ = Terminal::terminate();
     }
 }
