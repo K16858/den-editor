@@ -12,3 +12,4 @@ serde = { version = "1.0", features = ["derive"] }
 once_cell = "1.19"
 arboard = "3.6.1"
 aho-corasick = "1.1.4"
+portable-pty = "0.9.0"
