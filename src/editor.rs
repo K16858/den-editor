@@ -666,11 +666,23 @@ impl Editor {
             self.status_bar
                 .render(self.terminal_size.height.saturating_sub(2));
         }
-        if self.terminal_size.height > 2 {
+        let term_rows = if self.terminal_visible {
+            self.terminal_pane.rows
+        } else {
+            0
+        };
+        let main_height = self.terminal_size.height.saturating_sub(2).saturating_sub(term_rows);
+        if main_height > 0 {
             if self.sidebar_visible {
                 self.sidebar.render(0);
             }
             self.view.render(0);
+        }
+        if self.terminal_visible {
+            let term_origin = main_height;
+            if self.terminal_pane.needs_redraw() {
+                let _ = self.terminal_pane.draw(term_origin);
+            }
         }
 
         let new_caret_pos = if self.in_prompt() {
@@ -680,6 +692,12 @@ impl Editor {
             }
         } else if self.sidebar_visible && self.sidebar_focus {
             self.sidebar.caret_position(0)
+        } else if self.terminal_focus {
+            Position {
+                row: self.terminal_size.height.saturating_sub(2).saturating_sub(term_rows)
+                    + term_rows.saturating_sub(1),
+                col: 0,
+            }
         } else {
             self.view.caret_position()
         };
