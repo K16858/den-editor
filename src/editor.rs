@@ -28,8 +28,8 @@ use self::command::{
     Edit::InsertNewline,
     MoveDirection,
     System::{
-        CreateFile, CreateFolder, Dismiss, FocusSidebar, FocusView, Quit, Replace, Resize, Save,
-        Search, ToggleSidebar,
+        CreateFile, CreateFolder, Dismiss, FocusSidebar, FocusTerminal, FocusView, Quit, Replace,
+        Resize, Save, Search, ToggleSidebar, ToggleTerminal,
     },
 };
 
@@ -266,6 +266,8 @@ impl Editor {
             System(ToggleSidebar) => self.toggle_sidebar(),
             System(FocusSidebar) => self.focus_sidebar(),
             System(FocusView) => self.focus_view(),
+            System(ToggleTerminal) => self.toggle_terminal(),
+            System(FocusTerminal) => self.focus_terminal(),
             System(Dismiss) => self.view.clear_selection(),
             System(Search) => self.set_prompt(PromptType::Search),
             System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
@@ -307,7 +309,34 @@ impl Editor {
 
     fn focus_view(&mut self) {
         self.sidebar_focus = false;
+        self.terminal_focus = false;
         self.sidebar.mark_redraw(true);
+        self.view.mark_redraw(true);
+    }
+
+    fn toggle_terminal(&mut self) {
+        self.terminal_visible = !self.terminal_visible;
+        if self.terminal_visible {
+            self.terminal_focus = true;
+            self.sidebar_focus = false;
+        } else {
+            self.terminal_focus = false;
+        }
+        let size = self.terminal_size;
+        self.resize(size);
+        self.view.mark_redraw(true);
+        self.terminal_pane.mark_redraw(true);
+    }
+
+    fn focus_terminal(&mut self) {
+        if !self.terminal_visible {
+            self.terminal_visible = true;
+            let size = self.terminal_size;
+            self.resize(size);
+        }
+        self.terminal_focus = true;
+        self.sidebar_focus = false;
+        self.terminal_pane.mark_redraw(true);
         self.view.mark_redraw(true);
     }
 
@@ -359,7 +388,7 @@ impl Editor {
             }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder,
+                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
             )
             | Move(_) => {}
         }
@@ -377,7 +406,9 @@ impl Editor {
                     | FocusSidebar
                     | FocusView
                     | CreateFile
-                    | CreateFolder,
+                    | CreateFolder
+                    | ToggleTerminal
+                    | FocusTerminal,
             )
             | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
@@ -423,7 +454,7 @@ impl Editor {
             }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder,
+                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
             )
             | Move(_) => {}
         }
@@ -450,7 +481,7 @@ impl Editor {
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder,
+                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
             )
             | Move(_) => {}
         }
@@ -507,7 +538,7 @@ impl Editor {
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder,
+                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
             )
             | Move(_) => {}
         }
