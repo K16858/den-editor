@@ -7,3 +7,6 @@ pub use pty::PtySession;
 mod reader;
 #[allow(unused_imports)]
 pub use reader::{PtyEvent, ReaderThread};
+mod buffer;
+#[allow(unused_imports)]
+pub use buffer::{Cell, Row, ScrollbackBuffer};
