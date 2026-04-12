@@ -738,6 +738,10 @@ impl Editor {
             height: term_rows,
             width: size.width,
         };
+        if self.terminal_visible && self.terminal_pane.is_running() {
+            #[allow(clippy::cast_possible_truncation)]
+            let _ = self.terminal_pane.resize_pty(size.width as u16, term_rows as u16);
+        }
         let bar_size = Size {
             height: 1,
             width: size.width,
