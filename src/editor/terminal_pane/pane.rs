@@ -111,11 +111,17 @@ impl TerminalPane {
     pub fn draw(&mut self, origin_y: usize) -> io::Result<()> {
         let h = self.rows;
         let w = self.size.width;
-        let total = self.buffer.len();
-        let start = total.saturating_sub(h);
 
-        for row in 0..h {
-            let screen_row = origin_y + row;
+        Terminal::move_caret_to(Position { row: origin_y, col: 0 })?;
+        let separator = "─".repeat(w);
+        Terminal::print(&separator)?;
+
+        let content_rows = h.saturating_sub(1);
+        let total = self.buffer.len();
+        let start = total.saturating_sub(content_rows);
+
+        for row in 0..content_rows {
+            let screen_row = origin_y + 1 + row;
             Terminal::move_caret_to(Position { row: screen_row, col: 0 })?;
             let mut out = stdout();
             out.queue(crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine))?;
