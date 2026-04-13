@@ -32,7 +32,4 @@ impl ReaderThread {
         (Self { handle }, rx)
     }
 
-    pub fn join(self) {
-        let _ = self.handle.join();
-    }
 }

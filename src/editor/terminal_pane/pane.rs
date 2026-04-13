@@ -52,9 +52,7 @@ impl TerminalPane {
 
     pub fn stop(&mut self) {
         self.session = None;
-        if let Some(t) = self.reader_thread.take() {
-            t.join();
-        }
+        self.reader_thread = None;
         self.rx = None;
         self.closed = false;
     }
