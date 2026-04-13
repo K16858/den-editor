@@ -1,11 +1,12 @@
 #![allow(dead_code)]
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, ChildKiller, native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
 pub struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
+    killer: Box<dyn ChildKiller + Send + Sync>,
 }
 
 impl PtySession {
@@ -28,9 +29,12 @@ impl PtySession {
         let mut builder = CommandBuilder::new(&shell);
         builder.cwd(cwd);
 
-        pair.slave
+        let child: Box<dyn Child + Send + Sync> = pair
+            .slave
             .spawn_command(builder)
             .map_err(|e| io::Error::other(e.to_string()))?;
+
+        let killer = child.clone_killer();
 
         let reader = pair
             .master
@@ -41,7 +45,13 @@ impl PtySession {
             .take_writer()
             .map_err(|e| io::Error::other(e.to_string()))?;
 
-        Ok((Self { master: pair.master, writer }, reader))
+        Ok((Self { master: pair.master, writer, killer }, reader))
+    }
+
+    /// 子プロセスを強制終了する。`ClosePseudoConsole` がブロックしないようにするため
+    /// `PtySession` を drop する前に必ず呼ぶ。
+    pub fn kill(&mut self) {
+        let _ = self.killer.kill();
     }
 
     pub fn write_all(&mut self, data: &[u8]) -> io::Result<()> {

@@ -51,6 +51,9 @@ impl TerminalPane {
     }
 
     pub fn stop(&mut self) {
+        if let Some(ref mut s) = self.session {
+            s.kill();
+        }
         self.session = None;
         self.reader_thread = None;
         self.rx = None;
