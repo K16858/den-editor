@@ -47,6 +47,8 @@ impl TerminalPane {
         self.reader_thread = Some(thread);
         self.rx = Some(rx);
         self.closed = false;
+        let content_rows = self.rows.saturating_sub(1);
+        self.buffer.set_screen_size(cols as usize, content_rows);
         Ok(())
     }
 
@@ -93,11 +95,21 @@ impl TerminalPane {
         }
     }
 
-    pub fn resize_pty(&self, cols: u16, rows: u16) -> io::Result<()> {
+    pub fn resize_pty(&mut self, cols: u16, rows: u16) -> io::Result<()> {
+        let content_rows = self.rows.saturating_sub(1);
+        self.buffer.set_screen_size(cols as usize, content_rows);
         if let Some(s) = &self.session {
             s.resize(cols, rows)
         } else {
             Ok(())
+        }
+    }
+
+    pub fn cursor_position(&self, origin_y: usize) -> Position {
+        let screen_row = self.buffer.cursor_row().saturating_sub(self.buffer.screen_origin());
+        Position {
+            row: origin_y + 1 + screen_row,
+            col: self.buffer.cursor_col(),
         }
     }
 
@@ -118,8 +130,7 @@ impl TerminalPane {
         Terminal::print(&separator)?;
 
         let content_rows = h.saturating_sub(1);
-        let total = self.buffer.len();
-        let start = total.saturating_sub(content_rows);
+        let start = self.buffer.screen_origin();
 
         for row in 0..content_rows {
             let screen_row = origin_y + 1 + row;

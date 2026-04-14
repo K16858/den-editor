@@ -6,7 +6,7 @@ mod annotated_string;
 use annotated_string::{AnnotatedString, AnnotationType};
 pub mod highlight;
 mod terminal;
-use crossterm::event::{Event, KeyEvent, KeyEventKind, KeyModifiers, read};
+use crossterm::event::{Event, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
 use position::Position;
 use size::Size;
 mod document_status;
@@ -156,10 +156,16 @@ impl Editor {
             if self.should_quit {
                 break;
             }
-            match read() {
-                Ok(event) => self.evaluate_event(event),
+            match poll(std::time::Duration::from_millis(50)) {
+                Ok(true) => match read() {
+                    Ok(event) => self.evaluate_event(event),
+                    Err(err) => {
+                        self.update_message(&format!("Input error: {err}"));
+                    }
+                },
+                Ok(false) => {}
                 Err(err) => {
-                    self.update_message(&format!("Input error: {err}"));
+                    self.update_message(&format!("Poll error: {err}"));
                 }
             }
             self.terminal_pane.poll();
@@ -792,12 +798,8 @@ impl Editor {
             }
         } else if self.sidebar_visible && self.sidebar_focus {
             self.sidebar.caret_position(0)
-        } else if self.terminal_focus {
-            Position {
-                row: self.terminal_size.height.saturating_sub(2).saturating_sub(term_rows)
-                    + term_rows.saturating_sub(1),
-                col: 0,
-            }
+        } else if self.terminal_focus && self.terminal_visible {
+            self.terminal_pane.cursor_position(main_height)
         } else {
             self.view.caret_position()
         };
@@ -828,7 +830,7 @@ fn key_event_to_bytes(code: crossterm::event::KeyCode, modifiers: KeyModifiers) 
         match code {
             KeyCode::Char(c) => {
                 let mut buf = [0u8; 4];
-                c.encode_utf8(&mut buf)[..c.len_utf8()].to_owned().into_bytes()
+                c.encode_utf8(&mut buf).as_bytes().to_vec()
             }
             KeyCode::Enter => b"\r".to_vec(),
             KeyCode::Backspace => b"\x7f".to_vec(),
