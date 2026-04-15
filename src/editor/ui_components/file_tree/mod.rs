@@ -194,9 +194,9 @@ fn format_line(entry: &VisibleEntry, is_selected: bool) -> String {
     };
     let padded = pad_or_truncate(&label, FileTree::CONTENT_WIDTH);
     if is_selected {
-        format!("{Reverse}{padded}{Reset}|")
+        format!("{Reverse}{padded}{Reset}│")
     } else {
-        format!("{padded}|")
+        format!("{padded}│")
     }
 }
 
@@ -242,7 +242,7 @@ impl UIComponent for FileTree {
             let line = if let Some(entry) = self.visible.get(idx) {
                 format_line(entry, idx == self.selected)
             } else {
-                format!("{}|", " ".repeat(Self::CONTENT_WIDTH))
+                format!("{}│", " ".repeat(Self::CONTENT_WIDTH))
             };
             Terminal::move_caret_to(Position {
                 row: draw_row,

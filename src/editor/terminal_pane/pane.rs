@@ -133,7 +133,12 @@ impl TerminalPane {
         let h = self.rows;
         let w = self.size.width;
 
-        Terminal::move_caret_to(Position { row: origin_y, col: origin_col })?;
+        if origin_col > 0 {
+            Terminal::move_caret_to(Position { row: origin_y, col: origin_col - 1 })?;
+            Terminal::print("├")?;
+        } else {
+            Terminal::move_caret_to(Position { row: origin_y, col: 0 })?;
+        }
         let separator = "─".repeat(w);
         Terminal::print(&separator)?;
 
@@ -144,7 +149,7 @@ impl TerminalPane {
             let screen_row = origin_y + 1 + row;
             Terminal::move_caret_to(Position { row: screen_row, col: origin_col })?;
             let mut out = stdout();
-            out.queue(crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine))?;
+            out.queue(crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine))?;
 
             if let Some(buf_row) = self.buffer.row(start + row) {
                 for cell in &buf_row.cells {
