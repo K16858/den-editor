@@ -402,8 +402,13 @@ impl Editor {
             return;
         }
         let cwd = self.sidebar.workspace_root().to_path_buf();
+        let sidebar_w = if self.sidebar_visible {
+            FileTree::WIDTH
+        } else {
+            0
+        };
         #[allow(clippy::cast_possible_truncation)]
-        let cols = self.terminal_size.width as u16;
+        let cols = self.terminal_size.width.saturating_sub(sidebar_w) as u16;
         #[allow(clippy::cast_possible_truncation)]
         let rows = self.terminal_pane.rows as u16;
         if let Err(e) = self.terminal_pane.start(&cwd, cols, rows) {
@@ -731,22 +736,24 @@ impl Editor {
         } else {
             0
         };
+        let right_width = size.width.saturating_sub(sidebar_w);
+
         self.view.set_col_offset(sidebar_w);
         self.view.resize(Size {
             height: main_height,
-            width: size.width.saturating_sub(sidebar_w),
+            width: right_width,
         });
         self.sidebar.resize(Size {
-            height: main_height,
+            height: main_height + term_rows,
             width: FileTree::WIDTH,
         });
         self.terminal_pane.size = Size {
             height: term_rows,
-            width: size.width,
+            width: right_width,
         };
         if self.terminal_visible && self.terminal_pane.is_running() {
             #[allow(clippy::cast_possible_truncation)]
-            let _ = self.terminal_pane.resize_pty(size.width as u16, term_rows as u16);
+            let _ = self.terminal_pane.resize_pty(right_width as u16, term_rows as u16);
         }
         let bar_size = Size {
             height: 1,
@@ -784,10 +791,15 @@ impl Editor {
             }
             self.view.render(0);
         }
+        let sidebar_w = if self.sidebar_visible {
+            FileTree::WIDTH
+        } else {
+            0
+        };
         if self.terminal_visible {
             let term_origin = main_height;
             if self.terminal_pane.needs_redraw() {
-                let _ = self.terminal_pane.draw(term_origin);
+                let _ = self.terminal_pane.draw(term_origin, sidebar_w);
             }
         }
 
@@ -799,7 +811,7 @@ impl Editor {
         } else if self.sidebar_visible && self.sidebar_focus {
             self.sidebar.caret_position(0)
         } else if self.terminal_focus && self.terminal_visible {
-            self.terminal_pane.cursor_position(main_height)
+            self.terminal_pane.cursor_position(main_height, sidebar_w)
         } else {
             self.view.caret_position()
         };

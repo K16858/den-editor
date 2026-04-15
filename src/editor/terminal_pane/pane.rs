@@ -113,11 +113,11 @@ impl TerminalPane {
         }
     }
 
-    pub fn cursor_position(&self, origin_y: usize) -> Position {
+    pub fn cursor_position(&self, origin_y: usize, origin_col: usize) -> Position {
         let screen_row = self.buffer.cursor_row().saturating_sub(self.buffer.screen_origin());
         Position {
             row: origin_y + 1 + screen_row,
-            col: self.buffer.cursor_col(),
+            col: origin_col + self.buffer.cursor_col(),
         }
     }
 
@@ -129,11 +129,11 @@ impl TerminalPane {
         self.needs_redraw = v;
     }
 
-    pub fn draw(&mut self, origin_y: usize) -> io::Result<()> {
+    pub fn draw(&mut self, origin_y: usize, origin_col: usize) -> io::Result<()> {
         let h = self.rows;
         let w = self.size.width;
 
-        Terminal::move_caret_to(Position { row: origin_y, col: 0 })?;
+        Terminal::move_caret_to(Position { row: origin_y, col: origin_col })?;
         let separator = "─".repeat(w);
         Terminal::print(&separator)?;
 
@@ -142,7 +142,7 @@ impl TerminalPane {
 
         for row in 0..content_rows {
             let screen_row = origin_y + 1 + row;
-            Terminal::move_caret_to(Position { row: screen_row, col: 0 })?;
+            Terminal::move_caret_to(Position { row: screen_row, col: origin_col })?;
             let mut out = stdout();
             out.queue(crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine))?;
 
