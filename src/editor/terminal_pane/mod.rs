@@ -1,6 +1,8 @@
 mod constants;
 #[allow(unused_imports)]
 pub use constants::*;
+#[cfg(windows)]
+mod win_pty;
 mod pty;
 #[allow(unused_imports)]
 pub use pty::PtySession;

@@ -70,6 +70,7 @@ enum State {
     #[default]
     Ground,
     Escape,
+    EscapeIntermediate,
     CsiEntry,
     CsiParam,
     OscString,
@@ -110,11 +111,11 @@ impl VtParser {
                     self.params.clear();
                     self.state = State::CsiEntry;
                 }
-                b']' => {
+                b']' | b'P' | b'^' | b'_' => {
                     self.state = State::OscString;
                 }
-                b'(' | b')' | b'#' | b'%' | b'\\' => {
-                    self.state = State::Ground;
+                b'(' | b')' | b'*' | b'+' | b'#' | b'%' => {
+                    self.state = State::EscapeIntermediate;
                 }
                 b'c' => {
                     self.reset_attrs();
@@ -122,12 +123,21 @@ impl VtParser {
                 }
                 _ => self.state = State::Ground,
             },
+            State::EscapeIntermediate => {
+                self.state = State::Ground;
+            },
             State::CsiEntry | State::CsiParam => {
-                if b.is_ascii_digit() || b == b';' {
+                if (0x20..=0x3F).contains(&b) {
                     self.params.push(b);
                     self.state = State::CsiParam;
-                } else {
+                } else if (0x40..=0x7E).contains(&b) {
                     self.dispatch_csi(b, buf);
+                    self.params.clear();
+                    self.state = State::Ground;
+                } else if b == 0x1b {
+                    self.params.clear();
+                    self.state = State::Escape;
+                } else {
                     self.params.clear();
                     self.state = State::Ground;
                 }

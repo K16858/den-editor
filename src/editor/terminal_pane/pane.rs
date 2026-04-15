@@ -40,15 +40,19 @@ impl TerminalPane {
         }
     }
 
-    pub fn start(&mut self, cwd: &std::path::Path, cols: u16, rows: u16) -> io::Result<()> {
-        let (session, reader) = PtySession::spawn(cwd, cols, rows)?;
+    pub fn start(&mut self, cwd: &std::path::Path, cols: u16, _rows: u16) -> io::Result<()> {
+        let content_rows = self.rows.saturating_sub(1);
+        #[allow(clippy::cast_possible_truncation)]
+        let pty_rows = content_rows as u16;
+        self.buffer = ScrollbackBuffer::new();
+        self.vt = VtParser::default();
+        self.buffer.set_screen_size(cols as usize, content_rows);
+        let (session, reader) = PtySession::spawn(cwd, cols, pty_rows)?;
         let (thread, rx) = ReaderThread::spawn(reader);
         self.session = Some(session);
         self.reader_thread = Some(thread);
         self.rx = Some(rx);
         self.closed = false;
-        let content_rows = self.rows.saturating_sub(1);
-        self.buffer.set_screen_size(cols as usize, content_rows);
         Ok(())
     }
 
@@ -77,6 +81,8 @@ impl TerminalPane {
                 }
                 PtyEvent::Closed => {
                     self.closed = true;
+                    self.vt
+                        .feed(b"\r\n[Process exited]\r\n", &mut self.buffer);
                     updated = true;
                 }
             }
@@ -95,11 +101,13 @@ impl TerminalPane {
         }
     }
 
-    pub fn resize_pty(&mut self, cols: u16, rows: u16) -> io::Result<()> {
+    pub fn resize_pty(&mut self, cols: u16, _rows: u16) -> io::Result<()> {
         let content_rows = self.rows.saturating_sub(1);
+        #[allow(clippy::cast_possible_truncation)]
+        let pty_rows = content_rows as u16;
         self.buffer.set_screen_size(cols as usize, content_rows);
         if let Some(s) = &self.session {
-            s.resize(cols, rows)
+            s.resize(cols, pty_rows)
         } else {
             Ok(())
         }
