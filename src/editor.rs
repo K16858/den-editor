@@ -387,7 +387,6 @@ impl Editor {
             self.start_terminal_if_needed();
         } else {
             self.terminal_focus = false;
-            self.terminal_pane.stop();
         }
         let size = self.terminal_size;
         self.resize(size);
