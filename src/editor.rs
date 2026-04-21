@@ -278,13 +278,20 @@ impl Editor {
         if self.sidebar_visible && self.sidebar_focus {
             let tree_consumed = match &command {
                 Move(m) if !m.is_selection => {
-                    if self.sidebar.handle_move(m.direction) {
-                        self.sidebar.mark_redraw(true);
+                    match self.sidebar.handle_move(m.direction) {
+                        Ok(moved) => {
+                            if moved {
+                                self.sidebar.mark_redraw(true);
+                            }
+                        }
+                        Err(e) => self.update_message(&format!("File tree error: {e}")),
                     }
                     true
                 }
                 Edit(InsertNewline) => {
-                    self.sidebar.handle_enter();
+                    if let Err(e) = self.sidebar.handle_enter() {
+                        self.update_message(&format!("File tree error: {e}"));
+                    }
                     self.sidebar.mark_redraw(true);
                     self.open_from_sidebar_selection();
                     true
@@ -341,7 +348,9 @@ impl Editor {
         self.sidebar_visible = !self.sidebar_visible;
         if self.sidebar_visible {
             self.sidebar_focus = true;
-            self.sidebar.rebuild();
+            if let Err(e) = self.sidebar.rebuild() {
+                self.update_message(&format!("File tree error: {e}"));
+            }
         } else {
             self.sidebar_focus = false;
         }
@@ -356,7 +365,9 @@ impl Editor {
             self.resize(self.terminal_size);
         }
         self.sidebar_focus = true;
-        self.sidebar.rebuild();
+        if let Err(e) = self.sidebar.rebuild() {
+            self.update_message(&format!("File tree error: {e}"));
+        }
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
     }
@@ -588,7 +599,9 @@ impl Editor {
                     match std::fs::create_dir_all(&target) {
                         Ok(()) => {
                             self.update_message(&format!("Created: {name}"));
-                            self.sidebar.rebuild();
+                            if let Err(e) = self.sidebar.rebuild() {
+                                self.update_message(&format!("File tree error: {e}"));
+                            }
                             self.sidebar.mark_redraw(true);
                         }
                         Err(e) => self.update_message(&format!("Error: {e}")),
@@ -607,7 +620,9 @@ impl Editor {
                     {
                         Ok(_) => {
                             self.update_message(&format!("Created: {name}"));
-                            self.sidebar.rebuild();
+                            if let Err(e) = self.sidebar.rebuild() {
+                                self.update_message(&format!("File tree error: {e}"));
+                            }
                             self.sidebar.mark_redraw(true);
                             let path_str = target.to_string_lossy().to_string();
                             if let Err(e) = self.view.load(&path_str) {

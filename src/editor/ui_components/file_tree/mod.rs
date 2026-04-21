@@ -41,7 +41,7 @@ impl FileTree {
             needs_redraw: true,
             pending_open: None,
         };
-        tree.rebuild();
+        let _ = tree.rebuild();
         tree
     }
 
@@ -57,11 +57,11 @@ impl FileTree {
         &self.root
     }
 
-    pub fn rebuild(&mut self) {
+    pub fn rebuild(&mut self) -> Result<(), Error> {
         let sel = self.visible.get(self.selected).map(|e| e.path.clone());
         self.visible.clear();
         let root = self.root.clone();
-        let _ = self.append_children(&root, 0);
+        self.append_children(&root, 0)?;
         self.clamp_selected();
         if let Some(p) = sel
             && let Some(i) = self.visible.iter().position(|e| e.path == p)
@@ -69,6 +69,7 @@ impl FileTree {
             self.selected = i;
         }
         self.ensure_scroll();
+        Ok(())
     }
 
     fn append_children(&mut self, dir: &Path, depth: usize) -> Result<(), Error> {
@@ -125,9 +126,9 @@ impl FileTree {
         }
     }
 
-    pub fn handle_move(&mut self, direction: MoveDirection) -> bool {
+    pub fn handle_move(&mut self, direction: MoveDirection) -> Result<bool, Error> {
         if self.visible.is_empty() {
-            return false;
+            return Ok(false);
         }
         match direction {
             MoveDirection::Up | MoveDirection::ScrollUp => {
@@ -138,32 +139,32 @@ impl FileTree {
             }
             MoveDirection::Left => {
                 let Some(entry) = self.visible.get(self.selected) else {
-                    return false;
+                    return Ok(false);
                 };
                 if entry.is_dir && self.expanded.remove(&entry.path) {
-                    self.rebuild();
+                    self.rebuild()?;
                 }
-                return true;
+                return Ok(true);
             }
             MoveDirection::Right => {
                 let Some(entry) = self.visible.get(self.selected) else {
-                    return false;
+                    return Ok(false);
                 };
                 if entry.is_dir && !self.expanded.contains(&entry.path) {
                     self.expanded.insert(entry.path.clone());
-                    self.rebuild();
+                    self.rebuild()?;
                 }
-                return true;
+                return Ok(true);
             }
-            _ => return false,
+            _ => return Ok(false),
         }
         self.ensure_scroll();
-        true
+        Ok(true)
     }
 
-    pub fn handle_enter(&mut self) -> bool {
+    pub fn handle_enter(&mut self) -> Result<bool, Error> {
         let Some(entry) = self.visible.get(self.selected) else {
-            return false;
+            return Ok(false);
         };
         if entry.is_dir {
             if self.expanded.contains(&entry.path) {
@@ -171,11 +172,11 @@ impl FileTree {
             } else {
                 self.expanded.insert(entry.path.clone());
             }
-            self.rebuild();
-            true
+            self.rebuild()?;
+            Ok(true)
         } else {
             self.pending_open = Some(entry.path.clone());
-            true
+            Ok(true)
         }
     }
 
