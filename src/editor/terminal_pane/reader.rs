@@ -32,4 +32,7 @@ impl ReaderThread {
         (Self { handle }, rx)
     }
 
+    pub fn join(self) -> thread::Result<()> {
+        self.handle.join()
+    }
 }

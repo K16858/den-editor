@@ -61,8 +61,14 @@ impl TerminalPane {
             s.kill();
         }
         self.session = None;
-        self.reader_thread = None;
         self.rx = None;
+        if let Some(thread) = self.reader_thread.take()
+            && thread.join().is_err()
+        {
+            self.vt
+                .feed(b"\r\n[Reader thread join failed]\r\n", &mut self.buffer);
+            self.needs_redraw = true;
+        }
         self.closed = false;
     }
 
