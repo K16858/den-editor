@@ -133,7 +133,7 @@ unsafe extern "system" {
         lpOverlapped: *mut c_void,
     ) -> BOOL;
 
-    fn LoadLibraryW(lpLibFileName: *const WCHAR) -> HANDLE;
+    fn GetModuleHandleW(lpModuleName: *const WCHAR) -> HANDLE;
     fn GetProcAddress(hModule: HANDLE, lpProcName: *const u8) -> *mut c_void;
 }
 
@@ -152,7 +152,7 @@ struct ConPtyApi {
 
 fn load_conpty_api() -> io::Result<ConPtyApi> {
     let module_name = wide_string("kernel32.dll");
-    let module = unsafe { LoadLibraryW(module_name.as_ptr()) };
+    let module = unsafe { GetModuleHandleW(module_name.as_ptr()) };
     if module.is_null() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
