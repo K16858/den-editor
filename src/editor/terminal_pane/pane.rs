@@ -6,7 +6,9 @@ use super::{
     vt::VtParser,
 };
 use crate::editor::{Position, Size, terminal::Terminal};
-use crossterm::style::{Attribute, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor};
+use crossterm::style::{
+    Attribute, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
+};
 use crossterm::QueueableCommand;
 use std::io::{self, stdout};
 use std::sync::mpsc::Receiver;
@@ -172,18 +174,10 @@ impl TerminalPane {
                     } else {
                         out.queue(SetAttribute(Attribute::NormalIntensity))?;
                     }
-                    Terminal::print(&cell.ch.to_string())?;
+                    out.queue(Print(cell.ch))?;
                 }
                 out.queue(ResetColor)?;
                 out.queue(SetAttribute(Attribute::Reset))?;
-            }
-
-            let used = self
-                .buffer
-                .row(start + row)
-                .map_or(0, |r| r.cells.len());
-            if used < w {
-                Terminal::print(&" ".repeat(w - used))?;
             }
         }
         self.needs_redraw = false;
