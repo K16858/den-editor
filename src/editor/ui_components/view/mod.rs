@@ -50,7 +50,7 @@ pub struct View {
     buffer: Buffer,
     needs_redraw: bool,
     size: Size,
-    /// Horizontal skip when drawing (e.g. sidebar width). Affects caret column only for the main buffer area.
+    /// Horizontal offset for main view rendering/clearing and caret position (e.g. sidebar width).
     col_offset: usize,
     text_location: Location,
     scroll_offset: Position,
