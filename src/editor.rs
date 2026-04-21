@@ -15,7 +15,7 @@ use std::{
     env,
     io::Error,
     panic::{set_hook, take_hook},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 use terminal::Terminal;
 mod command;
@@ -577,7 +577,13 @@ impl Editor {
                     return;
                 }
                 let base = self.create_base_dir();
-                let target = base.join(&name);
+                let target = match self.resolve_workspace_target(&base, &name) {
+                    Ok(path) => path,
+                    Err(msg) => {
+                        self.update_message(&msg);
+                        return;
+                    }
+                };
                 if is_dir {
                     match std::fs::create_dir_all(&target) {
                         Ok(()) => {
@@ -630,6 +636,46 @@ impl Editor {
             }
         }
         self.sidebar.workspace_root().to_path_buf()
+    }
+
+    fn resolve_workspace_target(&self, base: &Path, input: &str) -> Result<PathBuf, String> {
+        let candidate = Path::new(input);
+        if candidate.is_absolute() {
+            return Err("Invalid path: absolute paths are not allowed".to_string());
+        }
+
+        let mut relative = PathBuf::new();
+        for component in candidate.components() {
+            match component {
+                Component::Normal(part) => relative.push(part),
+                Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    return Err("Invalid path: outside workspace".to_string());
+                }
+            }
+        }
+
+        if relative.as_os_str().is_empty() {
+            return Err("Invalid path: name is empty".to_string());
+        }
+
+        let root = self
+            .sidebar
+            .workspace_root()
+            .canonicalize()
+            .map_err(|e| format!("Workspace path error: {e}"))?;
+        let base = base
+            .canonicalize()
+            .map_err(|e| format!("Base path error: {e}"))?;
+        if !base.starts_with(&root) {
+            return Err("Invalid path: outside workspace".to_string());
+        }
+
+        let target = base.join(relative);
+        if !target.starts_with(&root) {
+            return Err("Invalid path: outside workspace".to_string());
+        }
+        Ok(target)
     }
 
     // =========================================
