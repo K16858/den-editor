@@ -393,7 +393,7 @@ fn spawn_child(hpc: HPCON, cwd: &Path, api: &ConPtyApi) -> io::Result<RawHandle>
             attr_ptr,
             0,
             PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-            (&raw const hpc).cast_mut().cast::<c_void>(),
+            hpc,
             mem::size_of::<HPCON>(),
             ptr::null_mut(),
             ptr::null_mut(),
