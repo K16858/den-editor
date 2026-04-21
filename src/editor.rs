@@ -594,8 +594,11 @@ impl Editor {
                         Err(e) => self.update_message(&format!("Error: {e}")),
                     }
                 } else {
-                    if let Some(parent) = target.parent() {
-                        let _ = std::fs::create_dir_all(parent);
+                    if let Some(parent) = target.parent()
+                        && let Err(e) = std::fs::create_dir_all(parent)
+                    {
+                        self.update_message(&format!("Error: {e}"));
+                        return;
                     }
                     match std::fs::OpenOptions::new()
                         .write(true)
