@@ -420,9 +420,7 @@ impl Editor {
         };
         #[allow(clippy::cast_possible_truncation)]
         let cols = self.terminal_size.width.saturating_sub(sidebar_w) as u16;
-        #[allow(clippy::cast_possible_truncation)]
-        let rows = self.terminal_pane.rows as u16;
-        if let Err(e) = self.terminal_pane.start(&cwd, cols, rows) {
+        if let Err(e) = self.terminal_pane.start(&cwd, cols) {
             self.update_message(&format!("Terminal error: {e}"));
         }
     }
@@ -817,7 +815,7 @@ impl Editor {
         };
         if self.terminal_visible && self.terminal_pane.is_running() {
             #[allow(clippy::cast_possible_truncation)]
-            let _ = self.terminal_pane.resize_pty(right_width as u16, term_rows as u16);
+            let _ = self.terminal_pane.resize_pty(right_width as u16);
         }
         let bar_size = Size {
             height: 1,

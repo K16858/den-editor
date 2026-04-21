@@ -42,7 +42,7 @@ impl TerminalPane {
         }
     }
 
-    pub fn start(&mut self, cwd: &std::path::Path, cols: u16, _rows: u16) -> io::Result<()> {
+    pub fn start(&mut self, cwd: &std::path::Path, cols: u16) -> io::Result<()> {
         let content_rows = self.rows.saturating_sub(1);
         #[allow(clippy::cast_possible_truncation)]
         let pty_rows = content_rows as u16;
@@ -109,7 +109,7 @@ impl TerminalPane {
         }
     }
 
-    pub fn resize_pty(&mut self, cols: u16, _rows: u16) -> io::Result<()> {
+    pub fn resize_pty(&mut self, cols: u16) -> io::Result<()> {
         let content_rows = self.rows.saturating_sub(1);
         #[allow(clippy::cast_possible_truncation)]
         let pty_rows = content_rows as u16;
