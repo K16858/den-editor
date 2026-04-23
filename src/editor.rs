@@ -151,8 +151,10 @@ impl Editor {
 
     pub fn run(&mut self) {
         loop {
-            self.terminal_pane.poll();
-            self.refresh_screen();
+            let _ = self.terminal_pane.poll();
+            if self.needs_refresh() {
+                self.refresh_screen();
+            }
             if self.should_quit {
                 break;
             }
@@ -168,7 +170,7 @@ impl Editor {
                     self.update_message(&format!("Poll error: {err}"));
                 }
             }
-            self.terminal_pane.poll();
+            let _ = self.terminal_pane.poll();
             let status = self.view.get_status();
             self.status_bar.update_status(status);
         }
@@ -774,6 +776,15 @@ impl Editor {
     // =========================================
     // Rendering
     // =========================================
+    fn needs_refresh(&self) -> bool {
+        self.view.needs_redraw()
+            || self.sidebar.needs_redraw()
+            || self.status_bar.needs_redraw()
+            || self.message_bar.needs_redraw()
+            || self.command_bar.needs_redraw()
+            || (self.terminal_visible && self.terminal_pane.needs_redraw())
+    }
+
     pub fn refresh_status(&mut self) {
         let status = self.view.get_status();
         let title = format!("{} - {NAME}", status.file_name);
