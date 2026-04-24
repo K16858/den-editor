@@ -25,7 +25,7 @@ mod debugger;
 mod terminal_pane;
 use debugger::{AdapterConfig, DapSession, DebugState, discover_adapter_configs};
 use terminal_pane::TerminalPane;
-use ui_components::{CommandBar, FileTree, MessageBar, StatusBar, UIComponent, View};
+use ui_components::{CommandBar, DebugPanel, FileTree, MessageBar, StatusBar, UIComponent, View};
 mod ui_components;
 use self::command::{
     Command::{self, Edit, Move, System},
@@ -79,6 +79,7 @@ pub struct Editor {
     terminal_pane: TerminalPane,
     terminal_visible: bool,
     terminal_focus: bool,
+    debug_panel: DebugPanel,
     debug_adapters: Vec<AdapterConfig>,
     active_debug_adapter: Option<AdapterConfig>,
     debug_session: Option<DapSession>,
@@ -138,6 +139,7 @@ impl Editor {
             terminal_pane: TerminalPane::new(),
             terminal_visible: false,
             terminal_focus: false,
+            debug_panel: DebugPanel::new(),
             debug_adapters: discover_adapter_configs(),
             active_debug_adapter: None,
             debug_session: None,
@@ -389,6 +391,7 @@ impl Editor {
         self.resize(self.terminal_size);
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
+        self.debug_panel.mark_redraw(true);
     }
 
     fn focus_sidebar(&mut self) {
@@ -402,6 +405,7 @@ impl Editor {
         }
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
+        self.debug_panel.mark_redraw(true);
     }
 
     fn focus_view(&mut self) {
@@ -409,6 +413,7 @@ impl Editor {
         self.terminal_focus = false;
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
+        self.debug_panel.mark_redraw(true);
     }
 
     fn toggle_terminal(&mut self) {
@@ -424,6 +429,7 @@ impl Editor {
         self.resize(size);
         self.view.mark_redraw(true);
         self.terminal_pane.mark_redraw(true);
+        self.debug_panel.mark_redraw(true);
     }
 
     fn focus_terminal(&mut self) {
@@ -437,6 +443,7 @@ impl Editor {
         self.sidebar_focus = false;
         self.terminal_pane.mark_redraw(true);
         self.view.mark_redraw(true);
+        self.debug_panel.mark_redraw(true);
     }
 
     fn start_terminal_if_needed(&mut self) {
@@ -535,6 +542,7 @@ impl Editor {
                 self.debug_session = Some(session);
                 self.active_debug_adapter = Some(adapter.clone());
                 self.debug_state.active = true;
+                self.debug_panel.update(&self.debug_state);
                 self.update_message(&format!("Debug started: {}", adapter.display_name));
             }
             Err(e) => {
@@ -550,6 +558,11 @@ impl Editor {
         self.debug_session = None;
         self.active_debug_adapter = None;
         self.debug_state.active = false;
+        self.debug_state.current_thread_id = None;
+        self.debug_state.threads.clear();
+        self.debug_state.stack_frames.clear();
+        self.debug_state.variables.clear();
+        self.debug_panel.update(&self.debug_state);
         self.update_message("Debug stopped.");
     }
 
@@ -562,12 +575,27 @@ impl Editor {
             had_activity = true;
             match event {
                 debugger::DapEvent::Message(envelope) => {
-                    if let debugger::DapMessage::Event { event, body, .. } = envelope.message
-                        && event == "stopped"
-                    {
-                        self.debug_state.current_thread_id =
-                            body.get("threadId").and_then(serde_json::Value::as_i64);
-                        self.update_message("Debug paused.");
+                    match envelope.message {
+                        debugger::DapMessage::Event { event, body, .. } => {
+                            if event == "stopped" {
+                                self.debug_state.current_thread_id =
+                                    body.get("threadId").and_then(serde_json::Value::as_i64);
+                                self.request_threads();
+                                self.request_stack_trace();
+                                self.update_message("Debug paused.");
+                            }
+                        }
+                        debugger::DapMessage::Response {
+                            success,
+                            command,
+                            body,
+                            ..
+                        } => {
+                            if success {
+                                self.handle_debug_response(&command, &body);
+                            }
+                        }
+                        debugger::DapMessage::Request { .. } => {}
                     }
                 }
                 debugger::DapEvent::Closed => should_stop = true,
@@ -578,6 +606,154 @@ impl Editor {
             self.stop_debug();
         } else if had_activity {
             self.status_bar.mark_redraw(true);
+            self.debug_panel.update(&self.debug_state);
+        }
+    }
+
+    fn request_threads(&mut self) {
+        self.with_debug_session(|session| {
+            session
+                .send_request("threads", json!({}))
+                .map_err(|e| format!("threads request error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn request_stack_trace(&mut self) {
+        let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
+        self.with_debug_session(|session| {
+            session
+                .send_request(
+                    "stackTrace",
+                    json!({
+                        "threadId": thread_id,
+                        "startFrame": 0,
+                        "levels": 20
+                    }),
+                )
+                .map_err(|e| format!("stackTrace request error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn request_scopes(&mut self, frame_id: i64) {
+        self.with_debug_session(|session| {
+            session
+                .send_request("scopes", json!({ "frameId": frame_id }))
+                .map_err(|e| format!("scopes request error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn request_variables(&mut self, reference: i64) {
+        self.with_debug_session(|session| {
+            session
+                .send_request("variables", json!({ "variablesReference": reference }))
+                .map_err(|e| format!("variables request error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn handle_debug_response(&mut self, command: &str, body: &serde_json::Value) {
+        match command {
+            "threads" => {
+                let threads = body
+                    .get("threads")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|v| debugger::ThreadSummary {
+                                id: v.get("id").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                                name: v
+                                    .get("name")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                self.debug_state.threads = threads;
+            }
+            "stackTrace" => {
+                let frames = body
+                    .get("stackFrames")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|v| debugger::StackFrameSummary {
+                                id: v.get("id").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                                name: v
+                                    .get("name")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                                line: v.get("line").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                                column: v
+                                    .get("column")
+                                    .and_then(serde_json::Value::as_i64)
+                                    .unwrap_or(0),
+                                source_path: v
+                                    .get("source")
+                                    .and_then(|s| s.get("path"))
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let frame_id = frames.first().map_or(0, |f| f.id);
+                self.debug_state.stack_frames = frames;
+                if frame_id != 0 {
+                    self.request_scopes(frame_id);
+                }
+            }
+            "scopes" => {
+                let reference = body
+                    .get("scopes")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|arr| arr.first())
+                    .and_then(|scope| scope.get("variablesReference"))
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0);
+                if reference != 0 {
+                    self.request_variables(reference);
+                }
+            }
+            "variables" => {
+                let vars = body
+                    .get("variables")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|v| debugger::VariableSummary {
+                                name: v
+                                    .get("name")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                                value: v
+                                    .get("value")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                                type_name: v
+                                    .get("type")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                                variables_reference: v
+                                    .get("variablesReference")
+                                    .and_then(serde_json::Value::as_i64)
+                                    .unwrap_or(0),
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                self.debug_state.variables = vars;
+            }
+            _ => {}
         }
     }
 
@@ -1063,6 +1239,7 @@ impl Editor {
             || self.status_bar.needs_redraw()
             || self.message_bar.needs_redraw()
             || self.command_bar.needs_redraw()
+            || self.debug_panel.needs_redraw()
             || (self.terminal_visible && self.terminal_pane.needs_redraw())
     }
 
@@ -1083,7 +1260,16 @@ impl Editor {
         } else {
             0
         };
-        let main_height = size.height.saturating_sub(2).saturating_sub(term_rows);
+        let debug_rows = if self.debug_state.active {
+            self.debug_panel.rows
+        } else {
+            0
+        };
+        let main_height = size
+            .height
+            .saturating_sub(2)
+            .saturating_sub(term_rows)
+            .saturating_sub(debug_rows);
         let sidebar_w = if self.sidebar_visible {
             FileTree::WIDTH
         } else {
@@ -1097,8 +1283,12 @@ impl Editor {
             width: right_width,
         });
         self.sidebar.resize(Size {
-            height: main_height + term_rows,
+            height: main_height + term_rows + debug_rows,
             width: FileTree::WIDTH,
+        });
+        self.debug_panel.resize(Size {
+            height: debug_rows,
+            width: right_width,
         });
         self.terminal_pane.size = Size {
             height: term_rows,
@@ -1138,7 +1328,17 @@ impl Editor {
         } else {
             0
         };
-        let main_height = self.terminal_size.height.saturating_sub(2).saturating_sub(term_rows);
+        let debug_rows = if self.debug_state.active {
+            self.debug_panel.rows
+        } else {
+            0
+        };
+        let main_height = self
+            .terminal_size
+            .height
+            .saturating_sub(2)
+            .saturating_sub(term_rows)
+            .saturating_sub(debug_rows);
         if main_height > 0 {
             if self.sidebar_visible {
                 self.sidebar.render(0);
@@ -1150,8 +1350,11 @@ impl Editor {
         } else {
             0
         };
+        if self.debug_state.active && debug_rows > 0 {
+            self.debug_panel.render(main_height);
+        }
         if self.terminal_visible {
-            let term_origin = main_height;
+            let term_origin = main_height + debug_rows;
             if self.terminal_pane.needs_redraw() {
                 let _ = self.terminal_pane.draw(term_origin, sidebar_w);
             }
@@ -1165,7 +1368,8 @@ impl Editor {
         } else if self.sidebar_visible && self.sidebar_focus {
             self.sidebar.caret_position(0)
         } else if self.terminal_focus && self.terminal_visible {
-            self.terminal_pane.cursor_position(main_height, sidebar_w)
+            self.terminal_pane
+                .cursor_position(main_height + debug_rows, sidebar_w)
         } else {
             self.view.caret_position()
         };

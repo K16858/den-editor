@@ -1,0 +1,83 @@
+use super::UIComponent;
+use super::super::{Size, terminal::Terminal};
+use crate::editor::debugger::DebugState;
+use std::io::Error;
+
+pub struct DebugPanel {
+    pub rows: usize,
+    size: Size,
+    needs_redraw: bool,
+    lines: Vec<String>,
+}
+
+impl DebugPanel {
+    pub const DEFAULT_ROWS: usize = 6;
+
+    pub fn new() -> Self {
+        Self {
+            rows: Self::DEFAULT_ROWS,
+            size: Size::default(),
+            needs_redraw: false,
+            lines: Vec::new(),
+        }
+    }
+
+    pub fn update(&mut self, state: &DebugState) {
+        let mut lines = Vec::new();
+        if state.active {
+            lines.push(format!(
+                "Debug: active  thread={}",
+                state
+                    .current_thread_id
+                    .map_or_else(|| "-".to_string(), |id| id.to_string())
+            ));
+            if let Some(frame) = state.stack_frames.first() {
+                lines.push(format!(
+                    "Frame: {} ({}:{}:{})",
+                    frame.name, frame.source_path, frame.line, frame.column
+                ));
+            } else {
+                lines.push("Frame: -".to_string());
+            }
+            if state.variables.is_empty() {
+                lines.push("Variables: -".to_string());
+            } else {
+                lines.push("Variables:".to_string());
+                for var in state.variables.iter().take(self.rows.saturating_sub(3)) {
+                    lines.push(format!("  {} = {}", var.name, var.value));
+                }
+            }
+        } else {
+            lines.push("Debug: inactive".to_string());
+        }
+        self.lines = lines;
+        self.mark_redraw(true);
+    }
+}
+
+impl UIComponent for DebugPanel {
+    fn mark_redraw(&mut self, value: bool) {
+        self.needs_redraw = value;
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.needs_redraw
+    }
+
+    fn set_size(&mut self, size: Size) {
+        self.size = size;
+    }
+
+    fn draw(&mut self, origin_row: usize) -> Result<(), Error> {
+        for row in 0..self.size.height {
+            let text = self.lines.get(row).map_or("", String::as_str);
+            let line = if text.len() <= self.size.width {
+                format!("{text:width$.width$}", width = self.size.width)
+            } else {
+                text.chars().take(self.size.width).collect()
+            };
+            Terminal::print_row(origin_row + row, 0, &line)?;
+        }
+        Ok(())
+    }
+}

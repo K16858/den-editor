@@ -1,4 +1,5 @@
 mod command_bar;
+mod debug_panel;
 mod file_tree;
 mod message_bar;
 mod status_bar;
@@ -6,6 +7,7 @@ mod ui_component;
 mod view;
 
 pub use command_bar::CommandBar;
+pub use debug_panel::DebugPanel;
 pub use file_tree::FileTree;
 pub use message_bar::MessageBar;
 pub use status_bar::StatusBar;
