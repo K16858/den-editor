@@ -17,6 +17,7 @@ use std::{
     panic::{set_hook, take_hook},
     path::{Component, Path, PathBuf},
 };
+use serde_json::json;
 use terminal::Terminal;
 mod command;
 mod debugger;
@@ -488,7 +489,21 @@ impl Editor {
             return;
         };
         match DapSession::start(&adapter) {
-            Ok(session) => {
+            Ok(mut session) => {
+                if let Err(e) = session.send_request(
+                    "initialize",
+                    json!({
+                        "clientID": "den",
+                        "clientName": "den",
+                        "adapterID": adapter.dap_adapter_type,
+                        "linesStartAt1": true,
+                        "columnsStartAt1": true,
+                        "pathFormat": "path"
+                    }),
+                ) {
+                    self.update_message(&format!("Debug init error: {e}"));
+                    return;
+                }
                 self.debug_session = Some(session);
                 self.debug_state.active = true;
                 self.update_message(&format!("Debug started: {}", adapter.display_name));

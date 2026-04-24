@@ -16,6 +16,7 @@ pub struct DapSession {
     child: Child,
     stdin: ChildStdin,
     rx: Receiver<DapEvent>,
+    next_seq: u64,
 }
 
 #[allow(dead_code)]
@@ -65,13 +66,33 @@ impl DapSession {
             }
         });
 
-        Ok(Self { child, stdin, rx })
+        Ok(Self {
+            child,
+            stdin,
+            rx,
+            next_seq: 1,
+        })
     }
 
     pub fn send(&mut self, msg: &DapMessage) -> io::Result<()> {
         let bytes = encode_envelope(msg).map_err(|e| io::Error::other(e.to_string()))?;
         self.stdin.write_all(&bytes)?;
         self.stdin.flush()
+    }
+
+    pub fn send_request(
+        &mut self,
+        command: &str,
+        arguments: serde_json::Value,
+    ) -> io::Result<u64> {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.send(&DapMessage::Request {
+            seq,
+            command: command.to_string(),
+            arguments,
+        })?;
+        Ok(seq)
     }
 
     pub fn try_recv(&self) -> Option<DapEvent> {
