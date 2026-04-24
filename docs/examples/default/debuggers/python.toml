@@ -1,0 +1,6 @@
+id = "python-debugpy"
+display_name = "Python (debugpy)"
+command = "python"
+args = ["-m", "debugpy.adapter"]
+file_extensions = ["py"]
+dap_adapter_type = "debugpy"

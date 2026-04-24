@@ -1,0 +1,6 @@
+id = "rust-codelldb"
+display_name = "Rust (CodeLLDB)"
+command = "codelldb"
+args = []
+file_extensions = ["rs"]
+dap_adapter_type = "codelldb"
