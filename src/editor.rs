@@ -17,7 +17,7 @@ use std::{
     io::Error,
     panic::{set_hook, take_hook},
     path::{Component, Path, PathBuf},
-    process::Command as ProcessCommand,
+    process::{Command as ProcessCommand, Stdio},
 };
 use serde_json::json;
 use terminal::Terminal;
@@ -817,23 +817,29 @@ impl Editor {
 
     fn ensure_adapter_ready(adapter: &AdapterConfig) -> Result<(), String> {
         if adapter.dap_adapter_type.eq_ignore_ascii_case("debugpy") {
-            match ProcessCommand::new("python")
+            let python_ok = ProcessCommand::new("python")
                 .args(["-c", "import debugpy.adapter"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status()
-            {
-                Ok(status) if status.success() => Ok(()),
-                Ok(_) => Err(
-                    "Python debug adapter is missing. Install: python -m pip install debugpy"
-                        .to_string(),
-                ),
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::NotFound {
-                        Err("Python is not found in PATH. Install Python and debugpy (python -m pip install debugpy).".to_string())
-                    } else {
-                        Err(format!("Failed to check Python/debugpy: {e}"))
-                    }
-                }
+                .is_ok_and(|status| status.success());
+            if python_ok {
+                return Ok(());
             }
+
+            let py_launcher_ok = ProcessCommand::new("py")
+                .args(["-3", "-c", "import debugpy.adapter"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if py_launcher_ok {
+                return Ok(());
+            }
+
+            Err("Python/debugpy が見つかりません。Install: python -m pip install debugpy （または py -3 -m pip install debugpy）".to_string())
         } else {
             match ProcessCommand::new(&adapter.command).arg("--version").status() {
                 Ok(_) => Ok(()),
