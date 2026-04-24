@@ -11,6 +11,7 @@ use position::Position;
 use size::Size;
 mod document_status;
 use document_status::DocumentStatus;
+use serde_json::json;
 use std::{
     collections::HashMap,
     env,
@@ -19,7 +20,6 @@ use std::{
     path::{Component, Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
 };
-use serde_json::json;
 use terminal::Terminal;
 mod command;
 mod debugger;
@@ -33,9 +33,9 @@ use self::command::{
     Edit::InsertNewline,
     MoveDirection,
     System::{
-        CreateFile, CreateFolder, Dismiss, FocusSidebar, FocusTerminal, FocusView, Quit, Replace,
-        Resize, Save, Search, ToggleBreakpoint, ToggleSidebar, ToggleTerminal, Continue,
-        StartDebug, StepInto, StepOut, StepOver, StopDebug,
+        Continue, CreateFile, CreateFolder, Dismiss, FocusSidebar, FocusTerminal, FocusView, Quit,
+        Replace, Resize, Save, Search, StartDebug, StepInto, StepOut, StepOver, StopDebug,
+        ToggleBreakpoint, ToggleSidebar, ToggleTerminal,
     },
 };
 
@@ -219,7 +219,12 @@ impl Editor {
         }
 
         if self.terminal_visible && self.terminal_focus && self.prompt_type.is_none() {
-            if let Event::Key(KeyEvent { code, modifiers, kind, .. }) = &event
+            if let Event::Key(KeyEvent {
+                code,
+                modifiers,
+                kind,
+                ..
+            }) = &event
                 && kind == &KeyEventKind::Press
             {
                 use crossterm::event::KeyCode;
@@ -485,9 +490,11 @@ impl Editor {
     }
 
     fn active_file_extension(&self) -> Option<String> {
-        self.view
-            .file_path()
-            .and_then(|path| path.extension().and_then(|ext| ext.to_str()).map(str::to_lowercase))
+        self.view.file_path().and_then(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .map(str::to_lowercase)
+        })
     }
 
     fn select_debug_adapter(&self) -> Option<&AdapterConfig> {
@@ -577,43 +584,39 @@ impl Editor {
             let Some(event) = event else { break };
             had_activity = true;
             match event {
-                debugger::DapEvent::Message(envelope) => {
-                    match envelope.message {
-                        debugger::DapMessage::Event { event, body, .. } => {
-                            if event == "initialized" {
-                                self.sync_all_breakpoints();
-                                if self.pending_configuration_done {
-                                    self.with_debug_session(|session| {
-                                        session
-                                            .send_request("configurationDone", json!({}))
-                                            .map_err(|e| {
-                                                format!("Debug configuration error: {e}")
-                                            })?;
-                                        Ok(())
-                                    });
-                                    self.pending_configuration_done = false;
-                                }
-                            } else if event == "stopped" {
-                                self.debug_state.current_thread_id =
-                                    body.get("threadId").and_then(serde_json::Value::as_i64);
-                                self.request_threads();
-                                self.request_stack_trace();
-                                self.update_message("Debug paused.");
+                debugger::DapEvent::Message(envelope) => match envelope.message {
+                    debugger::DapMessage::Event { event, body, .. } => {
+                        if event == "initialized" {
+                            self.sync_all_breakpoints();
+                            if self.pending_configuration_done {
+                                self.with_debug_session(|session| {
+                                    session
+                                        .send_request("configurationDone", json!({}))
+                                        .map_err(|e| format!("Debug configuration error: {e}"))?;
+                                    Ok(())
+                                });
+                                self.pending_configuration_done = false;
                             }
+                        } else if event == "stopped" {
+                            self.debug_state.current_thread_id =
+                                body.get("threadId").and_then(serde_json::Value::as_i64);
+                            self.request_threads();
+                            self.request_stack_trace();
+                            self.update_message("Debug paused.");
                         }
-                        debugger::DapMessage::Response {
-                            success,
-                            command,
-                            body,
-                            ..
-                        } => {
-                            if success {
-                                self.handle_debug_response(&command, &body);
-                            }
-                        }
-                        debugger::DapMessage::Request { .. } => {}
                     }
-                }
+                    debugger::DapMessage::Response {
+                        success,
+                        command,
+                        body,
+                        ..
+                    } => {
+                        if success {
+                            self.handle_debug_response(&command, &body);
+                        }
+                    }
+                    debugger::DapMessage::Request { .. } => {}
+                },
                 debugger::DapEvent::Closed => should_stop = true,
                 debugger::DapEvent::Error(e) => self.update_message(&format!("DAP error: {e}")),
             }
@@ -704,7 +707,10 @@ impl Editor {
                                     .and_then(serde_json::Value::as_str)
                                     .unwrap_or("")
                                     .to_string(),
-                                line: v.get("line").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                                line: v
+                                    .get("line")
+                                    .and_then(serde_json::Value::as_i64)
+                                    .unwrap_or(0),
                                 column: v
                                     .get("column")
                                     .and_then(serde_json::Value::as_i64)
@@ -796,7 +802,10 @@ impl Editor {
                 .and_then(|s| s.to_str())
                 .ok_or_else(|| "Could not resolve binary name from file.".to_string())?;
             let exe = if cfg!(windows) {
-                workspace.join("target").join("debug").join(format!("{stem}.exe"))
+                workspace
+                    .join("target")
+                    .join("debug")
+                    .join(format!("{stem}.exe"))
             } else {
                 workspace.join("target").join("debug").join(stem)
             };
@@ -839,9 +848,12 @@ impl Editor {
                 return Ok(());
             }
 
-            Err("Python/debugpy が見つかりません。Install: python -m pip install debugpy （または py -3 -m pip install debugpy）".to_string())
+            Err("Python/debugpy not found. Install: python -m pip install debugpy (or py -3 -m pip install debugpy)".to_string())
         } else {
-            match ProcessCommand::new(&adapter.command).arg("--version").status() {
+            match ProcessCommand::new(&adapter.command)
+                .arg("--version")
+                .status()
+            {
                 Ok(_) => Ok(()),
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::NotFound {
@@ -886,8 +898,8 @@ impl Editor {
             self.update_message("Open a file before toggling breakpoints.");
             return;
         };
-        let line = i64::try_from(self.view.current_line_index().saturating_add(1))
-            .unwrap_or(i64::MAX);
+        let line =
+            i64::try_from(self.view.current_line_index().saturating_add(1)).unwrap_or(i64::MAX);
         let entry = self.breakpoints.entry(path.clone()).or_default();
         if let Some(pos) = entry.iter().position(|l| *l == line) {
             entry.remove(pos);
@@ -999,9 +1011,9 @@ impl Editor {
             }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
-                    | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
-                    | Continue,
+                | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
+                | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
+                | Continue,
             )
             | Move(_) => {}
         }
@@ -1010,25 +1022,10 @@ impl Editor {
     fn process_command_during_save(&mut self, command: Command) {
         match command {
             System(
-                Quit
-                    | Resize(_)
-                    | Search
-                    | Save
-                    | Replace
-                    | ToggleSidebar
-                    | FocusSidebar
-                    | FocusView
-                    | CreateFile
-                    | CreateFolder
-                    | ToggleTerminal
-                    | FocusTerminal
-                    | StartDebug
-                    | StopDebug
-                    | ToggleBreakpoint
-                    | StepOver
-                    | StepInto
-                    | StepOut
-                    | Continue,
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
+                | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
+                | Continue,
             )
             | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
@@ -1074,9 +1071,9 @@ impl Editor {
             }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
-                    | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
-                    | Continue,
+                | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
+                | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
+                | Continue,
             )
             | Move(_) => {}
         }
@@ -1103,9 +1100,9 @@ impl Editor {
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
-                    | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
-                    | Continue,
+                | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
+                | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
+                | Continue,
             )
             | Move(_) => {}
         }
@@ -1175,9 +1172,9 @@ impl Editor {
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
-                    | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
-                    | Continue,
+                | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
+                | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
+                | Continue,
             )
             | Move(_) => {}
         }
