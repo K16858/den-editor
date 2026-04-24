@@ -6,6 +6,7 @@ use std::io::Error;
 pub struct DebugPanel {
     pub rows: usize,
     size: Size,
+    col_offset: usize,
     needs_redraw: bool,
     lines: Vec<String>,
 }
@@ -17,9 +18,14 @@ impl DebugPanel {
         Self {
             rows: Self::DEFAULT_ROWS,
             size: Size::default(),
+            col_offset: 0,
             needs_redraw: false,
             lines: Vec::new(),
         }
+    }
+
+    pub fn set_col_offset(&mut self, col_offset: usize) {
+        self.col_offset = col_offset;
     }
 
     pub fn update(&mut self, state: &DebugState) {
@@ -76,7 +82,7 @@ impl UIComponent for DebugPanel {
             } else {
                 text.chars().take(self.size.width).collect()
             };
-            Terminal::print_row(origin_row + row, 0, &line)?;
+            Terminal::print_row(origin_row + row, self.col_offset, &line)?;
         }
         Ok(())
     }

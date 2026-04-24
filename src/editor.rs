@@ -818,6 +818,17 @@ impl Editor {
             }));
         }
 
+        if adapter.dap_adapter_type.eq_ignore_ascii_case("dlv-dap") {
+            return Ok(json!({
+                "name": "Debug workspace package",
+                "type": "go",
+                "request": "launch",
+                "mode": "debug",
+                "program": workspace,
+                "cwd": workspace
+            }));
+        }
+
         Err(format!(
             "Unsupported adapter type for launch: {}",
             adapter.dap_adapter_type
@@ -850,8 +861,16 @@ impl Editor {
 
             Err("Python/debugpy not found. Install: python -m pip install debugpy (or py -3 -m pip install debugpy)".to_string())
         } else {
-            match ProcessCommand::new(&adapter.command)
-                .arg("--version")
+            let mut cmd = ProcessCommand::new(&adapter.command);
+            if adapter.dap_adapter_type.eq_ignore_ascii_case("dlv-dap") {
+                cmd.arg("version");
+            } else {
+                cmd.arg("--version");
+            }
+            match cmd
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status()
             {
                 Ok(_) => Ok(()),
@@ -859,6 +878,8 @@ impl Editor {
                     if e.kind() == std::io::ErrorKind::NotFound {
                         if adapter.dap_adapter_type.eq_ignore_ascii_case("codelldb") {
                             Err("Rust debug adapter 'codelldb' is missing. Install VS Code CodeLLDB extension or add codelldb to PATH.".to_string())
+                        } else if adapter.dap_adapter_type.eq_ignore_ascii_case("dlv-dap") {
+                            Err("Go debug adapter 'dlv' is missing. Install: go install github.com/go-delve/delve/cmd/dlv@latest and add GOPATH/bin to PATH.".to_string())
                         } else {
                             Err(format!(
                                 "Debug adapter command not found: {}. Install it and add to PATH.",
@@ -1370,6 +1391,7 @@ impl Editor {
             height: debug_rows,
             width: right_width,
         });
+        self.debug_panel.set_col_offset(sidebar_w);
         self.terminal_pane.size = Size {
             height: term_rows,
             width: right_width,

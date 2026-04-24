@@ -1,0 +1,6 @@
+id = "go-delve"
+display_name = "Go (Delve)"
+command = "dlv"
+args = ["dap"]
+file_extensions = ["go"]
+dap_adapter_type = "dlv-dap"
