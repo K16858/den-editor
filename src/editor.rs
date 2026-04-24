@@ -485,11 +485,9 @@ impl Editor {
     }
 
     fn active_file_extension(&self) -> Option<String> {
-        let file_name = self.view.get_status().file_name;
-        Path::new(&file_name)
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(ToString::to_string)
+        self.view
+            .file_path()
+            .and_then(|path| path.extension().and_then(|ext| ext.to_str()).map(str::to_lowercase))
     }
 
     fn select_debug_adapter(&self) -> Option<&AdapterConfig> {
