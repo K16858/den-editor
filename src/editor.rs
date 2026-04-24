@@ -840,6 +840,7 @@ impl Editor {
         if self.terminal_size.height == 0 || self.terminal_size.width == 0 {
             return;
         }
+        let _ = Terminal::begin_synchronized_update();
         let bottom_bar_row = self.terminal_size.height.saturating_sub(1);
         let _ = Terminal::hide_caret();
         if self.in_prompt() {
@@ -890,6 +891,7 @@ impl Editor {
 
         let _ = Terminal::move_caret_to(new_caret_pos);
         let _ = Terminal::show_caret();
+        let _ = Terminal::end_synchronized_update();
         let _ = Terminal::execute();
     }
 

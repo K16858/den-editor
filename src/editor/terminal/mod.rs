@@ -9,8 +9,8 @@ use crossterm::style::{
     Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor,
 };
 use crossterm::terminal::{
-    Clear, ClearType, DisableLineWrap, EnableLineWrap, EnterAlternateScreen, LeaveAlternateScreen,
-    SetTitle, disable_raw_mode, enable_raw_mode, size,
+    BeginSynchronizedUpdate, Clear, ClearType, DisableLineWrap, EnableLineWrap, EndSynchronizedUpdate,
+    EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode, size,
 };
 use crossterm::{Command, queue};
 use std::io::{Error, Write, stdout};
@@ -164,6 +164,16 @@ impl Terminal {
 
     pub fn execute() -> Result<(), Error> {
         stdout().flush()?;
+        Ok(())
+    }
+
+    pub fn begin_synchronized_update() -> Result<(), Error> {
+        Self::queue_command(BeginSynchronizedUpdate)?;
+        Ok(())
+    }
+
+    pub fn end_synchronized_update() -> Result<(), Error> {
+        Self::queue_command(EndSynchronizedUpdate)?;
         Ok(())
     }
 
