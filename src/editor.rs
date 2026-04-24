@@ -85,6 +85,7 @@ pub struct Editor {
     debug_session: Option<DapSession>,
     debug_state: DebugState,
     breakpoints: HashMap<PathBuf, Vec<i64>>,
+    pending_configuration_done: bool,
 }
 
 impl Editor {
@@ -145,6 +146,7 @@ impl Editor {
             debug_session: None,
             debug_state: DebugState::default(),
             breakpoints: HashMap::new(),
+            pending_configuration_done: false,
         };
 
         let size = Terminal::size().unwrap_or_default();
@@ -535,13 +537,10 @@ impl Editor {
                     self.update_message(&format!("Debug launch error: {e}"));
                     return;
                 }
-                if let Err(e) = session.send_request("configurationDone", json!({})) {
-                    self.update_message(&format!("Debug configuration error: {e}"));
-                    return;
-                }
                 self.debug_session = Some(session);
                 self.active_debug_adapter = Some(adapter.clone());
                 self.debug_state.active = true;
+                self.pending_configuration_done = true;
                 self.debug_panel.update(&self.debug_state);
                 self.update_message(&format!("Debug started: {}", adapter.display_name));
             }
@@ -558,6 +557,7 @@ impl Editor {
         self.debug_session = None;
         self.active_debug_adapter = None;
         self.debug_state.active = false;
+        self.pending_configuration_done = false;
         self.debug_state.current_thread_id = None;
         self.debug_state.threads.clear();
         self.debug_state.stack_frames.clear();
@@ -577,7 +577,20 @@ impl Editor {
                 debugger::DapEvent::Message(envelope) => {
                     match envelope.message {
                         debugger::DapMessage::Event { event, body, .. } => {
-                            if event == "stopped" {
+                            if event == "initialized" {
+                                self.sync_all_breakpoints();
+                                if self.pending_configuration_done {
+                                    self.with_debug_session(|session| {
+                                        session
+                                            .send_request("configurationDone", json!({}))
+                                            .map_err(|e| {
+                                                format!("Debug configuration error: {e}")
+                                            })?;
+                                        Ok(())
+                                    });
+                                    self.pending_configuration_done = false;
+                                }
+                            } else if event == "stopped" {
                                 self.debug_state.current_thread_id =
                                     body.get("threadId").and_then(serde_json::Value::as_i64);
                                 self.request_threads();
@@ -842,6 +855,24 @@ impl Editor {
                     }),
                 )
                 .map_err(|e| format!("setBreakpoints error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn sync_all_breakpoints(&mut self) {
+        let all = self.breakpoints.clone();
+        self.with_debug_session(|session| {
+            for (path, lines) in &all {
+                session
+                    .send_request(
+                        "setBreakpoints",
+                        json!({
+                            "source": { "path": path },
+                            "breakpoints": lines.iter().map(|line| json!({ "line": line })).collect::<Vec<_>>()
+                        }),
+                    )
+                    .map_err(|e| format!("setBreakpoints sync error: {e}"))?;
+            }
             Ok(())
         });
     }
