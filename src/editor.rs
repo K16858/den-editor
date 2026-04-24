@@ -6,7 +6,7 @@ mod annotated_string;
 use annotated_string::{AnnotatedString, AnnotationType};
 pub mod highlight;
 mod terminal;
-use crossterm::event::{Event, KeyEvent, KeyEventKind, read};
+use crossterm::event::{Event, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
 use position::Position;
 use size::Size;
 mod document_status;
@@ -15,16 +15,22 @@ use std::{
     env,
     io::Error,
     panic::{set_hook, take_hook},
+    path::{Component, Path, PathBuf},
 };
 use terminal::Terminal;
 mod command;
-use ui_components::{CommandBar, MessageBar, StatusBar, UIComponent, View};
+mod terminal_pane;
+use terminal_pane::TerminalPane;
+use ui_components::{CommandBar, FileTree, MessageBar, StatusBar, UIComponent, View};
 mod ui_components;
 use self::command::{
     Command::{self, Edit, Move, System},
     Edit::InsertNewline,
     MoveDirection,
-    System::{Dismiss, Quit, Replace, Resize, Save, Search},
+    System::{
+        CreateFile, CreateFolder, Dismiss, FocusSidebar, FocusTerminal, FocusView, Quit, Replace,
+        Resize, Save, Search, ToggleSidebar, ToggleTerminal,
+    },
 };
 
 pub const NAME: &str = env!("CARGO_PKG_NAME");
@@ -38,6 +44,8 @@ enum PromptType {
     Save,
     ReplaceSearch,
     Replace,
+    CreateFile,
+    CreateFolder,
     #[default]
     None,
 }
@@ -48,7 +56,7 @@ impl PromptType {
     }
 }
 
-#[derive(Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Editor {
     should_quit: bool,
     view: View,
@@ -60,6 +68,12 @@ pub struct Editor {
     replace_query: String,
     title: String,
     quit_times: u8,
+    sidebar: FileTree,
+    sidebar_visible: bool,
+    sidebar_focus: bool,
+    terminal_pane: TerminalPane,
+    terminal_visible: bool,
+    terminal_focus: bool,
 }
 
 impl Editor {
@@ -71,16 +85,64 @@ impl Editor {
         }));
         Terminal::initialize()?;
 
-        let mut editor = Self::default();
+        let cwd = env::current_dir()?;
+        let mut workspace_root = cwd.clone();
+        let mut load_path: Option<PathBuf> = None;
+        let mut sidebar_visible = false;
+        let mut sidebar_focus = false;
+        let args: Vec<String> = env::args().collect();
+
+        if let Some(arg) = args.get(1) {
+            let p = PathBuf::from(arg);
+            if p.exists() {
+                if p.is_dir() {
+                    workspace_root = p.canonicalize().unwrap_or(p);
+                    sidebar_visible = true;
+                    sidebar_focus = false;
+                } else if p.is_file() {
+                    let parent = p.parent().unwrap_or_else(|| Path::new("."));
+                    workspace_root = parent
+                        .canonicalize()
+                        .unwrap_or_else(|_| parent.to_path_buf());
+                    load_path = Some(p.canonicalize().unwrap_or(p));
+                }
+            }
+        }
+
+        let sidebar = FileTree::new(workspace_root);
+
+        let mut editor = Self {
+            should_quit: false,
+            view: View::default(),
+            status_bar: StatusBar::default(),
+            terminal_size: Size::default(),
+            message_bar: MessageBar::default(),
+            command_bar: CommandBar::default(),
+            prompt_type: PromptType::None,
+            replace_query: String::new(),
+            title: String::new(),
+            quit_times: 0,
+            sidebar,
+            sidebar_visible,
+            sidebar_focus,
+            terminal_pane: TerminalPane::new(),
+            terminal_visible: false,
+            terminal_focus: false,
+        };
+
         let size = Terminal::size().unwrap_or_default();
         editor.resize(size);
-        // editor.update_message("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-C = copy | Ctrl-X = cut | Ctrl-V = paste | Ctrl-F = find | Ctrl-Z = undo | Ctrl-Shift-Z = redo | Ctrl-A = select all");
 
-        let args: Vec<String> = env::args().collect();
-        if let Some(file_name) = args.get(1)
-            && editor.view.load(file_name).is_err()
-        {
-            editor.update_message(&format!("ERROR: Could not open file: {file_name}"));
+        if let Some(path) = load_path {
+            let s = path.to_string_lossy();
+            if editor.view.load(&s).is_err() {
+                editor.update_message(&format!("ERROR: Could not open file: {s}"));
+            }
+        } else if let Some(arg) = args.get(1) {
+            let p = PathBuf::from(arg);
+            if !p.exists() {
+                editor.update_message(&format!("ERROR: Path does not exist: {arg}"));
+            }
         }
 
         editor.refresh_status();
@@ -89,16 +151,26 @@ impl Editor {
 
     pub fn run(&mut self) {
         loop {
-            self.refresh_screen();
+            let _ = self.terminal_pane.poll();
+            if self.needs_refresh() {
+                self.refresh_screen();
+            }
             if self.should_quit {
                 break;
             }
-            match read() {
-                Ok(event) => self.evaluate_event(event),
+            match poll(std::time::Duration::from_millis(50)) {
+                Ok(true) => match read() {
+                    Ok(event) => self.evaluate_event(event),
+                    Err(err) => {
+                        self.update_message(&format!("Input error: {err}"));
+                    }
+                },
+                Ok(false) => {}
                 Err(err) => {
-                    self.update_message(&format!("Input error: {err}"));
+                    self.update_message(&format!("Poll error: {err}"));
                 }
             }
+            let _ = self.terminal_pane.poll();
             let status = self.view.get_status();
             self.status_bar.update_status(status);
         }
@@ -108,14 +180,61 @@ impl Editor {
     // Event
     // =========================================
     fn evaluate_event(&mut self, event: Event) {
-        if let Event::Paste(data) = event {
+        if let Event::Paste(ref data) = event {
             if self.prompt_type.is_none() {
-                self.view.paste_text(&data);
+                if self.terminal_visible && self.terminal_focus {
+                    let _ = self.terminal_pane.write(data.as_bytes());
+                } else if !(self.sidebar_visible && self.sidebar_focus) {
+                    self.view.paste_text(data);
+                }
             } else {
                 for ch in data.chars() {
                     self.command_bar
                         .handle_edit_command(command::Edit::Insert(ch));
                 }
+            }
+            return;
+        }
+
+        if self.terminal_visible && self.terminal_focus && self.prompt_type.is_none() {
+            if let Event::Key(KeyEvent { code, modifiers, kind, .. }) = &event
+                && kind == &KeyEventKind::Press
+            {
+                use crossterm::event::KeyCode;
+                if let (KeyCode::Null | KeyCode::Char('@' | '2'), KeyModifiers::CONTROL) =
+                    (code, *modifiers)
+                {
+                    if let Ok(cmd) = Command::try_from(event) {
+                        self.process_command(cmd);
+                    }
+                    return;
+                }
+                if *modifiers == KeyModifiers::CONTROL {
+                    if let Ok(cmd) = Command::try_from(event.clone())
+                        && let System(Quit | FocusView | FocusTerminal | ToggleTerminal) = cmd
+                    {
+                        self.process_command(cmd);
+                        return;
+                    }
+                    if let KeyCode::Char('c') = code {
+                        let _ = self.terminal_pane.write(&[0x03]);
+                        return;
+                    }
+                    if let KeyCode::Char('d') = code {
+                        let _ = self.terminal_pane.write(&[0x04]);
+                        return;
+                    }
+                }
+                let bytes = key_event_to_bytes(*code, *modifiers);
+                if !bytes.is_empty() {
+                    let _ = self.terminal_pane.write(&bytes);
+                }
+                return;
+            }
+            if let Event::Resize(_, _) = &event
+                && let Ok(cmd) = Command::try_from(event)
+            {
+                self.process_command(cmd);
             }
             return;
         }
@@ -142,6 +261,8 @@ impl Editor {
             PromptType::Save => self.process_command_during_save(command),
             PromptType::ReplaceSearch => self.process_command_during_replace_search(command),
             PromptType::Replace => self.process_command_during_replace(command),
+            PromptType::CreateFile => self.process_command_during_create(command, false),
+            PromptType::CreateFolder => self.process_command_during_create(command, true),
             PromptType::None => self.process_command_no_prompt(command),
         }
     }
@@ -156,19 +277,170 @@ impl Editor {
         }
         self.reset_quit_times();
 
+        if self.sidebar_visible && self.sidebar_focus {
+            let tree_consumed = match &command {
+                Move(m) if !m.is_selection => {
+                    match self.sidebar.handle_move(m.direction) {
+                        Ok(moved) => {
+                            if moved {
+                                self.sidebar.mark_redraw(true);
+                            }
+                        }
+                        Err(e) => self.update_message(&format!("File tree error: {e}")),
+                    }
+                    true
+                }
+                Edit(InsertNewline) => {
+                    if let Err(e) = self.sidebar.handle_enter() {
+                        self.update_message(&format!("File tree error: {e}"));
+                    }
+                    self.sidebar.mark_redraw(true);
+                    self.open_from_sidebar_selection();
+                    true
+                }
+                Move(_) | Edit(_) => true,
+                System(Dismiss) => {
+                    self.sidebar_focus = false;
+                    self.sidebar.mark_redraw(true);
+                    self.view.mark_redraw(true);
+                    true
+                }
+                System(ToggleSidebar) => {
+                    self.toggle_sidebar();
+                    true
+                }
+                System(FocusSidebar) => {
+                    self.focus_sidebar();
+                    true
+                }
+                System(FocusView) => {
+                    self.focus_view();
+                    true
+                }
+                System(_) => false,
+            };
+            if tree_consumed {
+                return;
+            }
+        }
+
         match command {
             System(Quit | Resize(_)) => {}
+            System(ToggleSidebar) => self.toggle_sidebar(),
+            System(FocusSidebar) => self.focus_sidebar(),
+            System(FocusView) => self.focus_view(),
+            System(ToggleTerminal) => self.toggle_terminal(),
+            System(FocusTerminal) => self.focus_terminal(),
             System(Dismiss) => self.view.clear_selection(),
             System(Search) => self.set_prompt(PromptType::Search),
             System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
             System(Save) => self.handle_save(),
+            System(CreateFile) => self.set_prompt(PromptType::CreateFile),
+            System(CreateFolder) => self.set_prompt(PromptType::CreateFolder),
             Edit(edit_command) => {
                 if let Some(err) = self.view.handle_edit_command(edit_command) {
                     self.update_message(err);
                 }
             }
-
             Move(move_command) => self.view.handle_move_command(move_command),
+        }
+    }
+
+    fn toggle_sidebar(&mut self) {
+        self.sidebar_visible = !self.sidebar_visible;
+        if self.sidebar_visible {
+            self.sidebar_focus = true;
+            if let Err(e) = self.sidebar.rebuild() {
+                self.update_message(&format!("File tree error: {e}"));
+            }
+        } else {
+            self.sidebar_focus = false;
+        }
+        self.resize(self.terminal_size);
+        self.sidebar.mark_redraw(true);
+        self.view.mark_redraw(true);
+    }
+
+    fn focus_sidebar(&mut self) {
+        if !self.sidebar_visible {
+            self.sidebar_visible = true;
+            self.resize(self.terminal_size);
+        }
+        self.sidebar_focus = true;
+        if let Err(e) = self.sidebar.rebuild() {
+            self.update_message(&format!("File tree error: {e}"));
+        }
+        self.sidebar.mark_redraw(true);
+        self.view.mark_redraw(true);
+    }
+
+    fn focus_view(&mut self) {
+        self.sidebar_focus = false;
+        self.terminal_focus = false;
+        self.sidebar.mark_redraw(true);
+        self.view.mark_redraw(true);
+    }
+
+    fn toggle_terminal(&mut self) {
+        self.terminal_visible = !self.terminal_visible;
+        if self.terminal_visible {
+            self.terminal_focus = true;
+            self.sidebar_focus = false;
+            self.start_terminal_if_needed();
+        } else {
+            self.terminal_focus = false;
+        }
+        let size = self.terminal_size;
+        self.resize(size);
+        self.view.mark_redraw(true);
+        self.terminal_pane.mark_redraw(true);
+    }
+
+    fn focus_terminal(&mut self) {
+        if !self.terminal_visible {
+            self.terminal_visible = true;
+            self.start_terminal_if_needed();
+            let size = self.terminal_size;
+            self.resize(size);
+        }
+        self.terminal_focus = true;
+        self.sidebar_focus = false;
+        self.terminal_pane.mark_redraw(true);
+        self.view.mark_redraw(true);
+    }
+
+    fn start_terminal_if_needed(&mut self) {
+        if self.terminal_pane.is_running() {
+            return;
+        }
+        let cwd = self.sidebar.workspace_root().to_path_buf();
+        let sidebar_w = if self.sidebar_visible {
+            FileTree::WIDTH
+        } else {
+            0
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let cols = self.terminal_size.width.saturating_sub(sidebar_w) as u16;
+        if let Err(e) = self.terminal_pane.start(&cwd, cols) {
+            self.update_message(&format!("Terminal error: {e}"));
+        }
+    }
+
+    fn open_from_sidebar_selection(&mut self) {
+        if let Some(path) = self.sidebar.take_pending_open() {
+            let s = path.to_string_lossy();
+            match self.view.load(&s) {
+                Ok(()) => {
+                    self.sidebar_focus = false;
+                    self.refresh_status();
+                    self.update_message("");
+                }
+                Err(e) => {
+                    self.update_message(&format!("ERROR: Could not open file: {e}"));
+                }
+            }
+            self.view.mark_redraw(true);
+            self.sidebar.mark_redraw(true);
         }
     }
 
@@ -200,13 +472,31 @@ impl Editor {
             {
                 self.view.search_prev();
             }
-            System(Quit | Resize(_) | Search | Save | Replace) | Move(_) => {}
+            System(
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
+            )
+            | Move(_) => {}
         }
     }
 
     fn process_command_during_save(&mut self, command: Command) {
         match command {
-            System(Quit | Resize(_) | Search | Save | Replace) | Move(_) => {} // Not applicable during save, Resize already handled at this stage
+            System(
+                Quit
+                    | Resize(_)
+                    | Search
+                    | Save
+                    | Replace
+                    | ToggleSidebar
+                    | FocusSidebar
+                    | FocusView
+                    | CreateFile
+                    | CreateFolder
+                    | ToggleTerminal
+                    | FocusTerminal,
+            )
+            | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
                 self.set_prompt(PromptType::None);
                 self.update_message("Save aborted.");
@@ -248,7 +538,11 @@ impl Editor {
             {
                 self.view.search_prev();
             }
-            System(Quit | Resize(_) | Search | Save | Replace) | Move(_) => {}
+            System(
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
+            )
+            | Move(_) => {}
         }
     }
 
@@ -271,8 +565,134 @@ impl Editor {
                 }
             }
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
-            System(Quit | Resize(_) | Search | Save | Replace) | Move(_) => {}
+            System(
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
+            )
+            | Move(_) => {}
         }
+    }
+
+    fn process_command_during_create(&mut self, command: Command, is_dir: bool) {
+        match command {
+            System(Dismiss) => {
+                self.set_prompt(PromptType::None);
+                self.update_message("Cancelled.");
+            }
+            Edit(InsertNewline) => {
+                let name = self.command_bar.value();
+                self.set_prompt(PromptType::None);
+                if name.is_empty() {
+                    self.update_message("Name is empty.");
+                    return;
+                }
+                let base = self.create_base_dir();
+                let target = match self.resolve_workspace_target(&base, &name) {
+                    Ok(path) => path,
+                    Err(msg) => {
+                        self.update_message(&msg);
+                        return;
+                    }
+                };
+                if is_dir {
+                    match std::fs::create_dir_all(&target) {
+                        Ok(()) => {
+                            self.update_message(&format!("Created: {name}"));
+                            if let Err(e) = self.sidebar.rebuild() {
+                                self.update_message(&format!("File tree error: {e}"));
+                            }
+                            self.sidebar.mark_redraw(true);
+                        }
+                        Err(e) => self.update_message(&format!("Error: {e}")),
+                    }
+                } else {
+                    if let Some(parent) = target.parent()
+                        && let Err(e) = std::fs::create_dir_all(parent)
+                    {
+                        self.update_message(&format!("Error: {e}"));
+                        return;
+                    }
+                    match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&target)
+                    {
+                        Ok(_) => {
+                            self.update_message(&format!("Created: {name}"));
+                            if let Err(e) = self.sidebar.rebuild() {
+                                self.update_message(&format!("File tree error: {e}"));
+                            }
+                            self.sidebar.mark_redraw(true);
+                            let path_str = target.to_string_lossy().to_string();
+                            if let Err(e) = self.view.load(&path_str) {
+                                self.update_message(&format!("Open error: {e}"));
+                            } else {
+                                self.status_bar.mark_redraw(true);
+                            }
+                        }
+                        Err(e) => self.update_message(&format!("Error: {e}")),
+                    }
+                }
+            }
+            Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
+            System(
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
+            )
+            | Move(_) => {}
+        }
+    }
+
+    fn create_base_dir(&self) -> std::path::PathBuf {
+        if let Some(p) = self.sidebar.selected_path() {
+            if p.is_dir() {
+                return p;
+            }
+            if let Some(parent) = p.parent() {
+                return parent.to_path_buf();
+            }
+        }
+        self.sidebar.workspace_root().to_path_buf()
+    }
+
+    fn resolve_workspace_target(&self, base: &Path, input: &str) -> Result<PathBuf, String> {
+        let candidate = Path::new(input);
+        if candidate.is_absolute() {
+            return Err("Invalid path: absolute paths are not allowed".to_string());
+        }
+
+        let mut relative = PathBuf::new();
+        for component in candidate.components() {
+            match component {
+                Component::Normal(part) => relative.push(part),
+                Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    return Err("Invalid path: outside workspace".to_string());
+                }
+            }
+        }
+
+        if relative.as_os_str().is_empty() {
+            return Err("Invalid path: name is empty".to_string());
+        }
+
+        let root = self
+            .sidebar
+            .workspace_root()
+            .canonicalize()
+            .map_err(|e| format!("Workspace path error: {e}"))?;
+        let base = base
+            .canonicalize()
+            .map_err(|e| format!("Base path error: {e}"))?;
+        if !base.starts_with(&root) {
+            return Err("Invalid path: outside workspace".to_string());
+        }
+
+        let target = base.join(relative);
+        if !target.starts_with(&root) {
+            return Err("Invalid path: outside workspace".to_string());
+        }
+        Ok(target)
     }
 
     // =========================================
@@ -293,6 +713,12 @@ impl Editor {
             }
             PromptType::Replace => {
                 self.command_bar.set_prompt("Replace with: ");
+            }
+            PromptType::CreateFile => {
+                self.command_bar.set_prompt("New file name: ");
+            }
+            PromptType::CreateFolder => {
+                self.command_bar.set_prompt("New folder name: ");
             }
         }
         self.command_bar.clear_value();
@@ -350,6 +776,15 @@ impl Editor {
     // =========================================
     // Rendering
     // =========================================
+    fn needs_refresh(&self) -> bool {
+        self.view.needs_redraw()
+            || self.sidebar.needs_redraw()
+            || self.status_bar.needs_redraw()
+            || self.message_bar.needs_redraw()
+            || self.command_bar.needs_redraw()
+            || (self.terminal_visible && self.terminal_pane.needs_redraw())
+    }
+
     pub fn refresh_status(&mut self) {
         let status = self.view.get_status();
         let title = format!("{} - {NAME}", status.file_name);
@@ -362,10 +797,36 @@ impl Editor {
 
     fn resize(&mut self, size: Size) {
         self.terminal_size = size;
+        let term_rows = if self.terminal_visible {
+            self.terminal_pane.rows
+        } else {
+            0
+        };
+        let main_height = size.height.saturating_sub(2).saturating_sub(term_rows);
+        let sidebar_w = if self.sidebar_visible {
+            FileTree::WIDTH
+        } else {
+            0
+        };
+        let right_width = size.width.saturating_sub(sidebar_w);
+
+        self.view.set_col_offset(sidebar_w);
         self.view.resize(Size {
-            height: size.height.saturating_sub(2),
-            width: size.width,
+            height: main_height,
+            width: right_width,
         });
+        self.sidebar.resize(Size {
+            height: main_height + term_rows,
+            width: FileTree::WIDTH,
+        });
+        self.terminal_pane.size = Size {
+            height: term_rows,
+            width: right_width,
+        };
+        if self.terminal_visible && self.terminal_pane.is_running() {
+            #[allow(clippy::cast_possible_truncation)]
+            let _ = self.terminal_pane.resize_pty(right_width as u16);
+        }
         let bar_size = Size {
             height: 1,
             width: size.width,
@@ -379,6 +840,7 @@ impl Editor {
         if self.terminal_size.height == 0 || self.terminal_size.width == 0 {
             return;
         }
+        let _ = Terminal::begin_synchronized_update();
         let bottom_bar_row = self.terminal_size.height.saturating_sub(1);
         let _ = Terminal::hide_caret();
         if self.in_prompt() {
@@ -390,8 +852,28 @@ impl Editor {
             self.status_bar
                 .render(self.terminal_size.height.saturating_sub(2));
         }
-        if self.terminal_size.height > 2 {
+        let term_rows = if self.terminal_visible {
+            self.terminal_pane.rows
+        } else {
+            0
+        };
+        let main_height = self.terminal_size.height.saturating_sub(2).saturating_sub(term_rows);
+        if main_height > 0 {
+            if self.sidebar_visible {
+                self.sidebar.render(0);
+            }
             self.view.render(0);
+        }
+        let sidebar_w = if self.sidebar_visible {
+            FileTree::WIDTH
+        } else {
+            0
+        };
+        if self.terminal_visible {
+            let term_origin = main_height;
+            if self.terminal_pane.needs_redraw() {
+                let _ = self.terminal_pane.draw(term_origin, sidebar_w);
+            }
         }
 
         let new_caret_pos = if self.in_prompt() {
@@ -399,12 +881,17 @@ impl Editor {
                 row: bottom_bar_row,
                 col: self.command_bar.caret_position_col(),
             }
+        } else if self.sidebar_visible && self.sidebar_focus {
+            self.sidebar.caret_position(0)
+        } else if self.terminal_focus && self.terminal_visible {
+            self.terminal_pane.cursor_position(main_height, sidebar_w)
         } else {
             self.view.caret_position()
         };
 
         let _ = Terminal::move_caret_to(new_caret_pos);
         let _ = Terminal::show_caret();
+        let _ = Terminal::end_synchronized_update();
         let _ = Terminal::execute();
     }
 
@@ -418,6 +905,33 @@ impl Editor {
 
 impl Drop for Editor {
     fn drop(&mut self) {
+        self.terminal_pane.stop();
         let _ = Terminal::terminate();
+    }
+}
+
+fn key_event_to_bytes(code: crossterm::event::KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
+    use crossterm::event::KeyCode;
+    if modifiers == KeyModifiers::NONE || modifiers == KeyModifiers::SHIFT {
+        match code {
+            KeyCode::Char(c) => {
+                let mut buf = [0u8; 4];
+                c.encode_utf8(&mut buf).as_bytes().to_vec()
+            }
+            KeyCode::Enter => b"\r".to_vec(),
+            KeyCode::Backspace => b"\x7f".to_vec(),
+            KeyCode::Tab => b"\t".to_vec(),
+            KeyCode::Up => b"\x1b[A".to_vec(),
+            KeyCode::Down => b"\x1b[B".to_vec(),
+            KeyCode::Right => b"\x1b[C".to_vec(),
+            KeyCode::Left => b"\x1b[D".to_vec(),
+            KeyCode::Home => b"\x1b[H".to_vec(),
+            KeyCode::End => b"\x1b[F".to_vec(),
+            KeyCode::Delete => b"\x1b[3~".to_vec(),
+            KeyCode::Esc => b"\x1b".to_vec(),
+            _ => vec![],
+        }
+    } else {
+        vec![]
     }
 }

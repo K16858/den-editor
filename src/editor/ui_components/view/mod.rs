@@ -29,13 +29,8 @@ type HighlightCache = HashMap<usize, (Vec<HighlightAnnotation>, HighlightState, 
 
 /// Pairs of opening and closing brackets/quotes for auto-close.
 /// TODO: move this to a configuration file so users can customize the pairs.
-const BRACKET_PAIRS: &[(char, char)] = &[
-    ('(', ')'),
-    ('[', ']'),
-    ('{', '}'),
-    ('"', '"'),
-    ('\'', '\''),
-];
+const BRACKET_PAIRS: &[(char, char)] =
+    &[('(', ')'), ('[', ']'), ('{', '}'), ('"', '"'), ('\'', '\'')];
 
 /// Returns the matching closing character for `ch` if it is an opening bracket.
 fn closing_bracket_for(ch: char) -> Option<char> {
@@ -55,6 +50,8 @@ pub struct View {
     buffer: Buffer,
     needs_redraw: bool,
     size: Size,
+    /// Horizontal offset for main view rendering/clearing and caret position (e.g. sidebar width).
+    col_offset: usize,
     text_location: Location,
     scroll_offset: Position,
     search_info: Option<SearchInfo>,
@@ -66,6 +63,11 @@ pub struct View {
 }
 
 impl View {
+    pub fn set_col_offset(&mut self, col_offset: usize) {
+        self.col_offset = col_offset;
+        self.mark_redraw(true);
+    }
+
     pub fn get_status(&self) -> DocumentStatus {
         let language_name = self
             .buffer
@@ -92,9 +94,9 @@ impl View {
         for row in 0..height {
             let draw_row = origin_y + row;
             if row == vertical_center {
-                Self::draw_welcome_message_at(draw_row, width)?;
+                self.draw_welcome_message_at(draw_row, width)?;
             } else {
-                Self::draw_empty_row(draw_row)?;
+                self.draw_empty_row(draw_row)?;
             }
         }
         Ok(())
@@ -184,6 +186,7 @@ impl View {
                         state = new_state;
                         Terminal::print_annotated_row_with_prefix(
                             draw_row,
+                            self.col_offset,
                             &line_num_str,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
@@ -207,6 +210,7 @@ impl View {
                         state = final_state;
                         Terminal::print_annotated_row_with_prefix(
                             draw_row,
+                            self.col_offset,
                             &line_num_str,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
@@ -225,6 +229,7 @@ impl View {
                         state = new_state;
                         Terminal::print_annotated_row_with_prefix(
                             draw_row,
+                            self.col_offset,
                             &line_num_str,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
@@ -249,6 +254,7 @@ impl View {
                     state = final_state;
                     Terminal::print_annotated_row_with_prefix(
                         draw_row,
+                        self.col_offset,
                         &line_num_str,
                         &annotated_string,
                         line_idx == self.text_location.line_idx,
@@ -267,6 +273,7 @@ impl View {
                     state = new_state;
                     Terminal::print_annotated_row_with_prefix(
                         draw_row,
+                        self.col_offset,
                         &line_num_str,
                         &annotated_string,
                         line_idx == self.text_location.line_idx,
@@ -274,14 +281,14 @@ impl View {
                 }
             } else {
                 let empty_prefix = " ".repeat(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
-                Self::render_line(draw_row, &format!("{empty_prefix}~"))?;
+                self.render_line(draw_row, &format!("{empty_prefix}~"))?;
                 state = HighlightState::default();
             }
         }
         Ok(())
     }
 
-    fn draw_welcome_message_at(at: usize, width: usize) -> Result<(), Error> {
+    fn draw_welcome_message_at(&self, at: usize, width: usize) -> Result<(), Error> {
         let mut welcome_message = format!("{NAME} -- version {VERSION}");
         let gutter_total = Self::GUTTER_WIDTH + Self::GUTTER_PADDING;
         let content_width = width.saturating_sub(gutter_total);
@@ -295,18 +302,18 @@ impl View {
             welcome_message = format!("{prefix}{welcome_message}");
         }
         welcome_message.truncate(width);
-        Self::render_line(at, &welcome_message)?;
+        self.render_line(at, &welcome_message)?;
         Ok(())
     }
 
-    fn draw_empty_row(at: usize) -> Result<(), Error> {
+    fn draw_empty_row(&self, at: usize) -> Result<(), Error> {
         let empty_prefix = " ".repeat(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
-        Self::render_line(at, &format!("{empty_prefix}~"))?;
+        self.render_line(at, &format!("{empty_prefix}~"))?;
         Ok(())
     }
 
-    fn render_line(at: usize, line_text: &str) -> Result<(), Error> {
-        Terminal::print_row(at, line_text)
+    fn render_line(&self, at: usize, line_text: &str) -> Result<(), Error> {
+        Terminal::print_row(at, self.col_offset, line_text)
     }
 
     pub fn caret_position(&self) -> Position {
@@ -316,7 +323,7 @@ impl View {
 
         let gutter_total = Self::GUTTER_WIDTH + Self::GUTTER_PADDING;
         Position {
-            col: col + gutter_total,
+            col: col + gutter_total + self.col_offset,
             row,
         }
     }
@@ -811,7 +818,11 @@ impl View {
         };
         self.selection = None;
         match &op {
-            EditOp::Insert { cursor_after, at, text } => {
+            EditOp::Insert {
+                cursor_after,
+                at,
+                text,
+            } => {
                 self.buffer.insert_string(*at, text);
                 self.text_location = *cursor_after;
             }
@@ -822,7 +833,11 @@ impl View {
             EditOp::Group(ops) => {
                 for sub in ops {
                     match sub {
-                        EditOp::Insert { cursor_after, at, text } => {
+                        EditOp::Insert {
+                            cursor_after,
+                            at,
+                            text,
+                        } => {
                             self.buffer.insert_string(*at, text);
                             self.text_location = *cursor_after;
                         }
@@ -874,17 +889,30 @@ impl View {
 
         let mut ops: Vec<EditOp> = Vec::new();
         for line_idx in line_range {
-            let at = Location { grapheme_idx: 0, line_idx };
+            let at = Location {
+                grapheme_idx: 0,
+                line_idx,
+            };
             let cursor_after = self.buffer.insert_string(at, Self::INDENT);
-            ops.push(EditOp::Insert { at, text: Self::INDENT.to_string(), cursor_after });
+            ops.push(EditOp::Insert {
+                at,
+                text: Self::INDENT.to_string(),
+                cursor_after,
+            });
         }
 
-        let op = if ops.len() == 1 { ops.remove(0) } else { EditOp::Group(ops) };
+        let op = if ops.len() == 1 {
+            ops.remove(0)
+        } else {
+            EditOp::Group(ops)
+        };
         self.undo_history.push_edit(op);
 
         // Shift cursor and selection right by indent width.
-        self.text_location.grapheme_idx =
-            self.text_location.grapheme_idx.saturating_add(Self::INDENT.len());
+        self.text_location.grapheme_idx = self
+            .text_location
+            .grapheme_idx
+            .saturating_add(Self::INDENT.len());
         if let Some(sel) = &mut self.selection {
             sel.start.grapheme_idx = sel.start.grapheme_idx.saturating_add(Self::INDENT.len());
             sel.end.grapheme_idx = sel.end.grapheme_idx.saturating_add(Self::INDENT.len());
@@ -918,7 +946,10 @@ impl View {
                 continue;
             }
             let removed: String = " ".repeat(remove_count);
-            let at = Location { grapheme_idx: 0, line_idx };
+            let at = Location {
+                grapheme_idx: 0,
+                line_idx,
+            };
             self.buffer.delete_span(at, &removed);
             ops.push(EditOp::Delete { at, text: removed });
         }
@@ -928,27 +959,37 @@ impl View {
         }
         // Pull cursor left by however many spaces were removed on its line.
         let removed_for_line = |line_idx: usize| -> usize {
-            ops.iter().find_map(|op| {
-                if let EditOp::Delete { at, text } = op
-                    && at.line_idx == line_idx
-                {
-                    return Some(text.len());
-                }
-                None
-            }).unwrap_or(0)
+            ops.iter()
+                .find_map(|op| {
+                    if let EditOp::Delete { at, text } = op
+                        && at.line_idx == line_idx
+                    {
+                        return Some(text.len());
+                    }
+                    None
+                })
+                .unwrap_or(0)
         };
         self.text_location.grapheme_idx = self
             .text_location
             .grapheme_idx
             .saturating_sub(removed_for_line(self.text_location.line_idx));
         if let Some(sel) = &mut self.selection {
-            sel.start.grapheme_idx =
-                sel.start.grapheme_idx.saturating_sub(removed_for_line(sel.start.line_idx));
-            sel.end.grapheme_idx =
-                sel.end.grapheme_idx.saturating_sub(removed_for_line(sel.end.line_idx));
+            sel.start.grapheme_idx = sel
+                .start
+                .grapheme_idx
+                .saturating_sub(removed_for_line(sel.start.line_idx));
+            sel.end.grapheme_idx = sel
+                .end
+                .grapheme_idx
+                .saturating_sub(removed_for_line(sel.end.line_idx));
         }
 
-        let op = if ops.len() == 1 { ops.remove(0) } else { EditOp::Group(ops) };
+        let op = if ops.len() == 1 {
+            ops.remove(0)
+        } else {
+            EditOp::Group(ops)
+        };
         self.undo_history.push_edit(op);
 
         self.buffer.modified = true;
@@ -1060,7 +1101,11 @@ impl View {
         if self.buffer.is_file_loaded() {
             let cursor_after = self.buffer.insert_string(at, &wrapped);
             self.text_location = cursor_after;
-            let insert_op = EditOp::Insert { at, text: wrapped, cursor_after };
+            let insert_op = EditOp::Insert {
+                at,
+                text: wrapped,
+                cursor_after,
+            };
             let group_op = match delete_op {
                 Some(del) => EditOp::Group(vec![del, insert_op]),
                 None => insert_op,
@@ -1107,6 +1152,10 @@ impl View {
     pub fn load(&mut self, file_name: &str) -> Result<(), Error> {
         let buffer = Buffer::load(file_name)?;
         self.buffer = buffer;
+        self.text_location = Location::default();
+        self.scroll_offset = Position::default();
+        self.selection = None;
+        self.search_info = None;
         self.undo_history.clear_all();
         self.highlight_cache.clear();
         self.cache_version += 1;
@@ -1125,10 +1174,7 @@ impl View {
             }
             self.handle_move_command(Move::left(false));
             let at = self.text_location;
-            let text = self
-                .buffer
-                .content_deleted_at(at)
-                .unwrap_or_default();
+            let text = self.buffer.content_deleted_at(at).unwrap_or_default();
             self.buffer.delete(at);
             if self.buffer.is_file_loaded() && !text.is_empty() {
                 self.undo_history.push_edit(EditOp::Delete { at, text });
@@ -1144,10 +1190,7 @@ impl View {
         }
 
         let at = self.text_location;
-        let text = self
-            .buffer
-            .content_deleted_at(at)
-            .unwrap_or_default();
+        let text = self.buffer.content_deleted_at(at).unwrap_or_default();
         self.buffer.delete(self.text_location);
         if self.buffer.is_file_loaded() && !text.is_empty() {
             self.undo_history.clear_redo();
