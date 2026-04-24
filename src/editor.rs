@@ -21,6 +21,7 @@ use terminal::Terminal;
 mod command;
 mod debugger;
 mod terminal_pane;
+use debugger::{AdapterConfig, DapSession, DebugState, discover_adapter_configs};
 use terminal_pane::TerminalPane;
 use ui_components::{CommandBar, FileTree, MessageBar, StatusBar, UIComponent, View};
 mod ui_components;
@@ -30,7 +31,8 @@ use self::command::{
     MoveDirection,
     System::{
         CreateFile, CreateFolder, Dismiss, FocusSidebar, FocusTerminal, FocusView, Quit, Replace,
-        Resize, Save, Search, ToggleSidebar, ToggleTerminal,
+        Resize, Save, Search, ToggleBreakpoint, ToggleSidebar, ToggleTerminal, Continue,
+        StartDebug, StepInto, StepOut, StepOver, StopDebug,
     },
 };
 
@@ -75,6 +77,9 @@ pub struct Editor {
     terminal_pane: TerminalPane,
     terminal_visible: bool,
     terminal_focus: bool,
+    debug_adapters: Vec<AdapterConfig>,
+    debug_session: Option<DapSession>,
+    debug_state: DebugState,
 }
 
 impl Editor {
@@ -129,6 +134,9 @@ impl Editor {
             terminal_pane: TerminalPane::new(),
             terminal_visible: false,
             terminal_focus: false,
+            debug_adapters: discover_adapter_configs(),
+            debug_session: None,
+            debug_state: DebugState::default(),
         };
 
         let size = Terminal::size().unwrap_or_default();
@@ -153,6 +161,7 @@ impl Editor {
     pub fn run(&mut self) {
         loop {
             let _ = self.terminal_pane.poll();
+            self.poll_debug_events();
             if self.needs_refresh() {
                 self.refresh_screen();
             }
@@ -172,6 +181,7 @@ impl Editor {
                 }
             }
             let _ = self.terminal_pane.poll();
+            self.poll_debug_events();
             let status = self.view.get_status();
             self.status_bar.update_status(status);
         }
@@ -332,12 +342,17 @@ impl Editor {
             System(FocusView) => self.focus_view(),
             System(ToggleTerminal) => self.toggle_terminal(),
             System(FocusTerminal) => self.focus_terminal(),
+            System(StartDebug) => self.start_debug(),
+            System(StopDebug) => self.stop_debug(),
             System(Dismiss) => self.view.clear_selection(),
             System(Search) => self.set_prompt(PromptType::Search),
             System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
             System(Save) => self.handle_save(),
             System(CreateFile) => self.set_prompt(PromptType::CreateFile),
             System(CreateFolder) => self.set_prompt(PromptType::CreateFolder),
+            System(ToggleBreakpoint | StepOver | StepInto | StepOut | Continue) => {
+                self.update_message("Debug action not implemented yet.");
+            }
             Edit(edit_command) => {
                 if let Some(err) = self.view.handle_edit_command(edit_command) {
                     self.update_message(err);
@@ -445,6 +460,74 @@ impl Editor {
         }
     }
 
+    fn active_file_extension(&self) -> Option<String> {
+        let file_name = self.view.get_status().file_name;
+        Path::new(&file_name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(ToString::to_string)
+    }
+
+    fn select_debug_adapter(&self) -> Option<&AdapterConfig> {
+        let ext = self.active_file_extension()?;
+        self.debug_adapters.iter().find(|adapter| {
+            adapter
+                .file_extensions
+                .iter()
+                .any(|candidate| candidate == &ext)
+        })
+    }
+
+    fn start_debug(&mut self) {
+        if self.debug_session.is_some() {
+            self.update_message("Debug session is already running.");
+            return;
+        }
+        let Some(adapter) = self.select_debug_adapter().cloned() else {
+            self.update_message("No debug adapter for current file.");
+            return;
+        };
+        match DapSession::start(&adapter) {
+            Ok(session) => {
+                self.debug_session = Some(session);
+                self.debug_state.active = true;
+                self.update_message(&format!("Debug started: {}", adapter.display_name));
+            }
+            Err(e) => {
+                self.update_message(&format!("Debug start error: {e}"));
+            }
+        }
+    }
+
+    fn stop_debug(&mut self) {
+        if let Some(session) = &mut self.debug_session {
+            session.stop();
+        }
+        self.debug_session = None;
+        self.debug_state.active = false;
+        self.update_message("Debug stopped.");
+    }
+
+    fn poll_debug_events(&mut self) {
+        let mut should_stop = false;
+        let mut had_activity = false;
+        loop {
+            let event = self.debug_session.as_ref().and_then(DapSession::try_recv);
+            let Some(event) = event else { break };
+            had_activity = true;
+            match event {
+                debugger::DapEvent::Message(_) => {}
+                debugger::DapEvent::Closed => should_stop = true,
+                debugger::DapEvent::Error(e) => self.update_message(&format!("DAP error: {e}")),
+            }
+        }
+        if should_stop {
+            self.stop_debug();
+        } else if had_activity {
+            self.status_bar.mark_redraw(true);
+        }
+    }
+
     fn process_command_during_search(&mut self, command: Command) {
         match command {
             System(Dismiss) => {
@@ -475,7 +558,9 @@ impl Editor {
             }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
+                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
+                    | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
+                    | Continue,
             )
             | Move(_) => {}
         }
@@ -495,7 +580,14 @@ impl Editor {
                     | CreateFile
                     | CreateFolder
                     | ToggleTerminal
-                    | FocusTerminal,
+                    | FocusTerminal
+                    | StartDebug
+                    | StopDebug
+                    | ToggleBreakpoint
+                    | StepOver
+                    | StepInto
+                    | StepOut
+                    | Continue,
             )
             | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
@@ -541,7 +633,9 @@ impl Editor {
             }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
+                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
+                    | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
+                    | Continue,
             )
             | Move(_) => {}
         }
@@ -568,7 +662,9 @@ impl Editor {
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
+                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
+                    | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
+                    | Continue,
             )
             | Move(_) => {}
         }
@@ -638,7 +734,9 @@ impl Editor {
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
+                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
+                    | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
+                    | Continue,
             )
             | Move(_) => {}
         }
@@ -906,6 +1004,7 @@ impl Editor {
 
 impl Drop for Editor {
     fn drop(&mut self) {
+        self.stop_debug();
         self.terminal_pane.stop();
         let _ = Terminal::terminate();
     }
