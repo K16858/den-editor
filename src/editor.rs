@@ -17,6 +17,7 @@ use std::{
     io::Error,
     panic::{set_hook, take_hook},
     path::{Component, Path, PathBuf},
+    process::Command as ProcessCommand,
 };
 use serde_json::json;
 use terminal::Terminal;
@@ -510,6 +511,10 @@ impl Editor {
             self.update_message("No debug adapter for current file.");
             return;
         };
+        if let Err(msg) = Self::ensure_adapter_ready(&adapter) {
+            self.update_message(&msg);
+            return;
+        }
         match DapSession::start(&adapter) {
             Ok(mut session) => {
                 if let Err(e) = session.send_request(
@@ -810,6 +815,49 @@ impl Editor {
             "Unsupported adapter type for launch: {}",
             adapter.dap_adapter_type
         ))
+    }
+
+    fn ensure_adapter_ready(adapter: &AdapterConfig) -> Result<(), String> {
+        if adapter.dap_adapter_type.eq_ignore_ascii_case("debugpy") {
+            match ProcessCommand::new("python")
+                .args(["-c", "import debugpy.adapter"])
+                .status()
+            {
+                Ok(status) if status.success() => Ok(()),
+                Ok(_) => Err(
+                    "Python debug adapter is missing. Install: python -m pip install debugpy"
+                        .to_string(),
+                ),
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        Err("Python is not found in PATH. Install Python and debugpy (python -m pip install debugpy).".to_string())
+                    } else {
+                        Err(format!("Failed to check Python/debugpy: {e}"))
+                    }
+                }
+            }
+        } else {
+            match ProcessCommand::new(&adapter.command).arg("--version").status() {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        if adapter.dap_adapter_type.eq_ignore_ascii_case("codelldb") {
+                            Err("Rust debug adapter 'codelldb' is missing. Install VS Code CodeLLDB extension or add codelldb to PATH.".to_string())
+                        } else {
+                            Err(format!(
+                                "Debug adapter command not found: {}. Install it and add to PATH.",
+                                adapter.command
+                            ))
+                        }
+                    } else {
+                        Err(format!(
+                            "Failed to execute debug adapter '{}': {e}",
+                            adapter.command
+                        ))
+                    }
+                }
+            }
+        }
     }
 
     fn with_debug_session<F>(&mut self, mut f: F)
