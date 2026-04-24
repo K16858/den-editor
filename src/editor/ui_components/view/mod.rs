@@ -1213,6 +1213,10 @@ impl View {
         self.buffer.file_info.get_path().map(std::path::Path::to_path_buf)
     }
 
+    pub const fn current_line_index(&self) -> usize {
+        self.text_location.line_idx
+    }
+
     pub fn save_as(&mut self, file_name: &str) -> Result<(), Error> {
         self.buffer.save_as(file_name)
     }

@@ -12,6 +12,7 @@ use size::Size;
 mod document_status;
 use document_status::DocumentStatus;
 use std::{
+    collections::HashMap,
     env,
     io::Error,
     panic::{set_hook, take_hook},
@@ -82,6 +83,7 @@ pub struct Editor {
     active_debug_adapter: Option<AdapterConfig>,
     debug_session: Option<DapSession>,
     debug_state: DebugState,
+    breakpoints: HashMap<PathBuf, Vec<i64>>,
 }
 
 impl Editor {
@@ -140,6 +142,7 @@ impl Editor {
             active_debug_adapter: None,
             debug_session: None,
             debug_state: DebugState::default(),
+            breakpoints: HashMap::new(),
         };
 
         let size = Terminal::size().unwrap_or_default();
@@ -345,17 +348,25 @@ impl Editor {
             System(FocusView) => self.focus_view(),
             System(ToggleTerminal) => self.toggle_terminal(),
             System(FocusTerminal) => self.focus_terminal(),
-            System(StartDebug) => self.start_debug(),
+            System(StartDebug) => {
+                if self.debug_session.is_some() {
+                    self.continue_debug();
+                } else {
+                    self.start_debug();
+                }
+            }
             System(StopDebug) => self.stop_debug(),
+            System(ToggleBreakpoint) => self.toggle_breakpoint(),
+            System(StepOver) => self.step_over(),
+            System(StepInto) => self.step_into(),
+            System(StepOut) => self.step_out(),
+            System(Continue) => self.continue_debug(),
             System(Dismiss) => self.view.clear_selection(),
             System(Search) => self.set_prompt(PromptType::Search),
             System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
             System(Save) => self.handle_save(),
             System(CreateFile) => self.set_prompt(PromptType::CreateFile),
             System(CreateFolder) => self.set_prompt(PromptType::CreateFolder),
-            System(ToggleBreakpoint | StepOver | StepInto | StepOut | Continue) => {
-                self.update_message("Debug action not implemented yet.");
-            }
             Edit(edit_command) => {
                 if let Some(err) = self.view.handle_edit_command(edit_command) {
                     self.update_message(err);
@@ -550,7 +561,15 @@ impl Editor {
             let Some(event) = event else { break };
             had_activity = true;
             match event {
-                debugger::DapEvent::Message(_) => {}
+                debugger::DapEvent::Message(envelope) => {
+                    if let debugger::DapMessage::Event { event, body, .. } = envelope.message
+                        && event == "stopped"
+                    {
+                        self.debug_state.current_thread_id =
+                            body.get("threadId").and_then(serde_json::Value::as_i64);
+                        self.update_message("Debug paused.");
+                    }
+                }
                 debugger::DapEvent::Closed => should_stop = true,
                 debugger::DapEvent::Error(e) => self.update_message(&format!("DAP error: {e}")),
             }
@@ -602,6 +621,93 @@ impl Editor {
             "Unsupported adapter type for launch: {}",
             adapter.dap_adapter_type
         ))
+    }
+
+    fn with_debug_session<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut DapSession) -> Result<(), String>,
+    {
+        let Some(session) = &mut self.debug_session else {
+            self.update_message("Debug session is not running.");
+            return;
+        };
+        if let Err(e) = f(session) {
+            self.update_message(&e);
+        }
+    }
+
+    fn active_file_path(&self) -> Option<PathBuf> {
+        self.view.file_path()
+    }
+
+    fn toggle_breakpoint(&mut self) {
+        let Some(path) = self.active_file_path() else {
+            self.update_message("Open a file before toggling breakpoints.");
+            return;
+        };
+        let line = i64::try_from(self.view.current_line_index().saturating_add(1))
+            .unwrap_or(i64::MAX);
+        let entry = self.breakpoints.entry(path.clone()).or_default();
+        if let Some(pos) = entry.iter().position(|l| *l == line) {
+            entry.remove(pos);
+        } else {
+            entry.push(line);
+            entry.sort_unstable();
+        }
+        let lines = entry.clone();
+
+        self.with_debug_session(|session| {
+            session
+                .send_request(
+                    "setBreakpoints",
+                    json!({
+                        "source": { "path": path },
+                        "breakpoints": lines.iter().map(|line| json!({ "line": line })).collect::<Vec<_>>()
+                    }),
+                )
+                .map_err(|e| format!("setBreakpoints error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn continue_debug(&mut self) {
+        let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
+        self.with_debug_session(|session| {
+            session
+                .send_request("continue", json!({ "threadId": thread_id }))
+                .map_err(|e| format!("Continue error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn step_over(&mut self) {
+        let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
+        self.with_debug_session(|session| {
+            session
+                .send_request("next", json!({ "threadId": thread_id }))
+                .map_err(|e| format!("StepOver error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn step_into(&mut self) {
+        let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
+        self.with_debug_session(|session| {
+            session
+                .send_request("stepIn", json!({ "threadId": thread_id }))
+                .map_err(|e| format!("StepInto error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn step_out(&mut self) {
+        let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
+        self.with_debug_session(|session| {
+            session
+                .send_request("stepOut", json!({ "threadId": thread_id }))
+                .map_err(|e| format!("StepOut error: {e}"))?;
+            Ok(())
+        });
     }
 
     fn process_command_during_search(&mut self, command: Command) {
