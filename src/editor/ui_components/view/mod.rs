@@ -9,6 +9,7 @@ use super::UIComponent;
 use arboard::Clipboard;
 use std::cmp::min;
 use std::collections::HashMap;
+use std::path::PathBuf;
 mod buffer;
 use buffer::Buffer;
 use std::io::Error;
@@ -1206,6 +1207,10 @@ impl View {
 
     pub const fn is_file_loaded(&self) -> bool {
         self.buffer.is_file_loaded()
+    }
+
+    pub fn file_path(&self) -> Option<PathBuf> {
+        self.buffer.file_info.get_path().map(std::path::Path::to_path_buf)
     }
 
     pub fn save_as(&mut self, file_name: &str) -> Result<(), Error> {

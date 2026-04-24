@@ -79,6 +79,7 @@ pub struct Editor {
     terminal_visible: bool,
     terminal_focus: bool,
     debug_adapters: Vec<AdapterConfig>,
+    active_debug_adapter: Option<AdapterConfig>,
     debug_session: Option<DapSession>,
     debug_state: DebugState,
 }
@@ -136,6 +137,7 @@ impl Editor {
             terminal_visible: false,
             terminal_focus: false,
             debug_adapters: discover_adapter_configs(),
+            active_debug_adapter: None,
             debug_session: None,
             debug_state: DebugState::default(),
         };
@@ -504,7 +506,23 @@ impl Editor {
                     self.update_message(&format!("Debug init error: {e}"));
                     return;
                 }
+                let launch_args = match self.build_launch_arguments(&adapter) {
+                    Ok(args) => args,
+                    Err(msg) => {
+                        self.update_message(&msg);
+                        return;
+                    }
+                };
+                if let Err(e) = session.send_request("launch", launch_args) {
+                    self.update_message(&format!("Debug launch error: {e}"));
+                    return;
+                }
+                if let Err(e) = session.send_request("configurationDone", json!({})) {
+                    self.update_message(&format!("Debug configuration error: {e}"));
+                    return;
+                }
                 self.debug_session = Some(session);
+                self.active_debug_adapter = Some(adapter.clone());
                 self.debug_state.active = true;
                 self.update_message(&format!("Debug started: {}", adapter.display_name));
             }
@@ -519,6 +537,7 @@ impl Editor {
             session.stop();
         }
         self.debug_session = None;
+        self.active_debug_adapter = None;
         self.debug_state.active = false;
         self.update_message("Debug stopped.");
     }
@@ -541,6 +560,48 @@ impl Editor {
         } else if had_activity {
             self.status_bar.mark_redraw(true);
         }
+    }
+
+    fn build_launch_arguments(&self, adapter: &AdapterConfig) -> Result<serde_json::Value, String> {
+        let file_path = self
+            .view
+            .file_path()
+            .ok_or_else(|| "Open a file before starting debug.".to_string())?;
+        let workspace = self.sidebar.workspace_root().to_path_buf();
+
+        if adapter.dap_adapter_type.eq_ignore_ascii_case("debugpy") {
+            return Ok(json!({
+                "name": "Debug current file",
+                "type": "python",
+                "request": "launch",
+                "program": file_path,
+                "cwd": workspace
+            }));
+        }
+
+        if adapter.dap_adapter_type.eq_ignore_ascii_case("codelldb") {
+            let stem = file_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| "Could not resolve binary name from file.".to_string())?;
+            let exe = if cfg!(windows) {
+                workspace.join("target").join("debug").join(format!("{stem}.exe"))
+            } else {
+                workspace.join("target").join("debug").join(stem)
+            };
+            return Ok(json!({
+                "name": "Debug current binary",
+                "type": "lldb",
+                "request": "launch",
+                "program": exe,
+                "cwd": workspace
+            }));
+        }
+
+        Err(format!(
+            "Unsupported adapter type for launch: {}",
+            adapter.dap_adapter_type
+        ))
     }
 
     fn process_command_during_search(&mut self, command: Command) {
