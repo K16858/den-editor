@@ -318,14 +318,23 @@ impl View {
     }
 
     pub fn caret_position(&self) -> Position {
-        let Position { col, row } = self
+        let Size { height, .. } = self.size;
+        let mut rel = self
             .text_location_to_position()
             .saturating_sub(self.scroll_offset);
+        // After the view height shrinks (e.g. the bottom debug panel appears), the scroll
+        // update can lag one frame: `line_idx - scroll` may equal the old `height` and the
+        // caret would be drawn on the first row *below* the view (the debug panel).
+        if height > 0 {
+            rel.row = rel.row.min(height - 1);
+        } else {
+            rel.row = 0;
+        }
 
         let gutter_total = Self::GUTTER_WIDTH + Self::GUTTER_PADDING;
         Position {
-            col: col + gutter_total + self.col_offset,
-            row,
+            col: rel.col + gutter_total + self.col_offset,
+            row: rel.row,
         }
     }
 

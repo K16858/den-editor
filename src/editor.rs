@@ -449,7 +449,9 @@ impl Editor {
             self.resize(self.terminal_size);
         }
         self.sidebar_mode = SidebarMode::Debugger;
-        self.sidebar_focus = true;
+        // Read-only summary; keep keyboard focus in the editor.
+        self.sidebar_focus = false;
+        self.terminal_focus = false;
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
         self.debug_panel.mark_redraw(true);
@@ -1617,7 +1619,6 @@ impl Editor {
     }
 
     fn render_debugger_sidebar(&mut self, total_height: usize) {
-        let width = FileTree::WIDTH;
         let mut lines = Vec::new();
         lines.push(" Debugger".to_string());
         lines.push(format!(
@@ -1642,14 +1643,13 @@ impl Editor {
             lines.push(format!(" {}:{}", frame.source_path, frame.line));
         }
 
+        // `Terminal::print_row` clears to end-of-line and wipes the editor; match `FileTree::draw`
+        // (move + print only the sidebar width).
         for row in 0..total_height {
             let text = lines.get(row).map_or("", String::as_str);
-            let line = if text.len() <= width {
-                format!("{text:width$.width$}", width = width)
-            } else {
-                text.chars().take(width).collect()
-            };
-            let _ = Terminal::print_row(row, 0, &line);
+            let line = format_sidebar_column_line(text);
+            let _ = Terminal::move_caret_to(Position { row, col: 0 });
+            let _ = Terminal::print(&line);
         }
     }
 }
@@ -1660,6 +1660,25 @@ impl Drop for Editor {
         self.terminal_pane.stop();
         let _ = Terminal::terminate();
     }
+}
+
+/// One row in the file-tree width (23 + `│`), same footprint as `FileTree`, without erasing the rest
+/// of the screen row.
+fn format_sidebar_column_line(text: &str) -> String {
+    const CW: usize = FileTree::WIDTH - 1;
+    let body = if text.is_empty() {
+        " ".repeat(CW)
+    } else {
+        let n = text.chars().count();
+        if n > CW {
+            let take = CW.saturating_sub(1);
+            let prefix: String = text.chars().take(take).collect();
+            format!("{prefix}…")
+        } else {
+            format!("{text}{}", " ".repeat(CW - n))
+        }
+    };
+    format!("{body}│")
 }
 
 fn key_event_to_bytes(code: crossterm::event::KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
