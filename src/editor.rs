@@ -963,26 +963,35 @@ impl Editor {
         let line =
             i64::try_from(self.view.current_line_index().saturating_add(1)).unwrap_or(i64::MAX);
         let entry = self.breakpoints.entry(path.clone()).or_default();
-        if let Some(pos) = entry.iter().position(|l| *l == line) {
+        let added = if let Some(pos) = entry.iter().position(|l| *l == line) {
             entry.remove(pos);
+            false
         } else {
             entry.push(line);
             entry.sort_unstable();
-        }
+            true
+        };
         let lines = entry.clone();
 
-        self.with_debug_session(|session| {
-            session
-                .send_request(
-                    "setBreakpoints",
-                    json!({
-                        "source": { "path": path },
-                        "breakpoints": lines.iter().map(|line| json!({ "line": line })).collect::<Vec<_>>()
-                    }),
-                )
-                .map_err(|e| format!("setBreakpoints error: {e}"))?;
-            Ok(())
-        });
+        if self.debug_session.is_some() {
+            self.with_debug_session(|session| {
+                session
+                    .send_request(
+                        "setBreakpoints",
+                        json!({
+                            "source": { "path": path },
+                            "breakpoints": lines.iter().map(|line| json!({ "line": line })).collect::<Vec<_>>()
+                        }),
+                    )
+                    .map_err(|e| format!("setBreakpoints error: {e}"))?;
+                Ok(())
+            });
+        } else if added {
+            self.update_message("Breakpoint set (F5 to start debug).");
+        } else {
+            self.update_message("Breakpoint removed.");
+        }
+        self.view.mark_redraw(true);
     }
 
     fn sync_all_breakpoints(&mut self) {
