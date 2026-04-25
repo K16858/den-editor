@@ -56,8 +56,10 @@ impl DebugPanel {
         } else {
             lines.push("Debug: inactive".to_string());
         }
-        self.lines = lines;
-        self.mark_redraw(true);
+        if lines != self.lines {
+            self.lines = lines;
+            self.mark_redraw(true);
+        }
     }
 }
 

@@ -35,6 +35,8 @@ impl Terminal {
         Self::enter_alternate_screen()?;
         Self::clear_screen()?;
         Self::queue_command(EnableBracketedPaste)?;
+        // Steady cursor (disable terminal-native blink) on terminals that support DECSET 12.
+        Self::queue_command(Print("\x1b[?12l"))?;
         Self::execute()?;
         Ok(())
     }
