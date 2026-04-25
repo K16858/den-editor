@@ -8,7 +8,7 @@ use super::super::{
 use super::UIComponent;
 use arboard::Clipboard;
 use std::cmp::min;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 mod buffer;
 use buffer::Buffer;
@@ -61,12 +61,31 @@ pub struct View {
     cache_version: u64,
     selection: Option<Selection>,
     undo_history: UndoHistory,
+    /// DAP 行番号（1-based）。現在バッファの行に印を出す。
+    breakpoint_lines: HashSet<usize>,
 }
 
 impl View {
     pub fn set_col_offset(&mut self, col_offset: usize) {
         self.col_offset = col_offset;
         self.mark_redraw(true);
+    }
+
+    pub fn set_breakpoint_lines(&mut self, lines: &[i64]) {
+        let new: HashSet<usize> = lines
+            .iter()
+            .filter_map(|&l| {
+                if l > 0 {
+                    usize::try_from(l).ok()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if new != self.breakpoint_lines {
+            self.breakpoint_lines = new;
+            self.mark_redraw(true);
+        }
     }
 
     pub fn get_status(&self) -> DocumentStatus {
@@ -105,6 +124,18 @@ impl View {
 
     const GUTTER_WIDTH: usize = 5;
     const GUTTER_PADDING: usize = 2;
+
+    /// Line number column + optional `●` breakpoint mark (7 display columns, same width as before).
+    fn gutter_prefix(&self, line_idx: usize) -> String {
+        let n = line_idx + 1;
+        let m = if self.breakpoint_lines.contains(&n) { "●" } else { " " };
+        format!(
+            "{m}{:>w$}{pad}",
+            n,
+            w = Self::GUTTER_WIDTH - 1,
+            pad = " ".repeat(Self::GUTTER_PADDING)
+        )
+    }
 
     #[allow(clippy::too_many_lines)]
     fn render_buffer(&mut self, origin_y: usize) -> Result<(), Error> {
@@ -157,12 +188,7 @@ impl View {
 
                 let left = self.scroll_offset.col;
                 let right = left + content_width;
-                let line_num_str = format!(
-                    "{:>w$}{pad}",
-                    line_idx + 1,
-                    w = Self::GUTTER_WIDTH - 1,
-                    pad = " ".repeat(Self::GUTTER_PADDING + 1)
-                );
+                let line_num_str = self.gutter_prefix(line_idx);
                 let query = self
                     .search_info
                     .as_ref()

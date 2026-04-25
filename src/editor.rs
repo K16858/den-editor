@@ -1539,10 +1539,24 @@ impl Editor {
         self.command_bar.resize(bar_size);
     }
 
+    fn sync_view_breakpoints(&mut self) {
+        if let Some(path) = self.active_file_path() {
+            let lines = self
+                .breakpoints
+                .get(&path)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            self.view.set_breakpoint_lines(lines);
+        } else {
+            self.view.set_breakpoint_lines(&[]);
+        }
+    }
+
     fn refresh_screen(&mut self) {
         if self.terminal_size.height == 0 || self.terminal_size.width == 0 {
             return;
         }
+        self.sync_view_breakpoints();
         let _ = Terminal::begin_synchronized_update();
         let bottom_bar_row = self.terminal_size.height.saturating_sub(1);
         let _ = Terminal::hide_caret();
