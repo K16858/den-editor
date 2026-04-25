@@ -14,6 +14,7 @@ pub enum System {
     Replace,
     ToggleSidebar,
     FocusSidebar,
+    FocusDebuggerSidebar,
     FocusView,
     CreateFile,
     CreateFolder,
@@ -53,8 +54,15 @@ impl TryFrom<KeyEvent> for System {
         } else if modifiers == KeyModifiers::CONTROL | KeyModifiers::SHIFT {
             match code {
                 Char('e' | 'E') => Ok(Self::FocusSidebar),
+                Char('d' | 'D') => Ok(Self::FocusDebuggerSidebar),
                 Char('n' | 'N') => Ok(Self::CreateFolder),
                 _ => Err(format!("Unsupported CONTROL+SHIFT+{code:?} combination")),
+            }
+        } else if modifiers == KeyModifiers::CONTROL | KeyModifiers::ALT {
+            match code {
+                Char('e' | 'E') => Ok(Self::FocusSidebar),
+                Char('d' | 'D') => Ok(Self::FocusDebuggerSidebar),
+                _ => Err(format!("Unsupported CONTROL+ALT+{code:?} combination")),
             }
         } else if modifiers == KeyModifiers::CONTROL {
             match code {

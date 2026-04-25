@@ -33,9 +33,9 @@ use self::command::{
     Edit::InsertNewline,
     MoveDirection,
     System::{
-        Continue, CreateFile, CreateFolder, Dismiss, FocusSidebar, FocusTerminal, FocusView, Quit,
-        Replace, Resize, Save, Search, StartDebug, StepInto, StepOut, StepOver, StopDebug,
-        ToggleBreakpoint, ToggleSidebar, ToggleTerminal,
+        Continue, CreateFile, CreateFolder, Dismiss, FocusDebuggerSidebar, FocusSidebar,
+        FocusTerminal, FocusView, Quit, Replace, Resize, Save, Search, StartDebug, StepInto,
+        StepOut, StepOver, StopDebug, ToggleBreakpoint, ToggleSidebar, ToggleTerminal,
     },
 };
 
@@ -54,6 +54,13 @@ enum PromptType {
     CreateFolder,
     #[default]
     None,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Default)]
+enum SidebarMode {
+    #[default]
+    Explorer,
+    Debugger,
 }
 
 impl PromptType {
@@ -77,6 +84,7 @@ pub struct Editor {
     sidebar: FileTree,
     sidebar_visible: bool,
     sidebar_focus: bool,
+    sidebar_mode: SidebarMode,
     terminal_pane: TerminalPane,
     terminal_visible: bool,
     terminal_focus: bool,
@@ -138,6 +146,7 @@ impl Editor {
             sidebar,
             sidebar_visible,
             sidebar_focus,
+            sidebar_mode: SidebarMode::Explorer,
             terminal_pane: TerminalPane::new(),
             terminal_visible: false,
             terminal_focus: false,
@@ -236,13 +245,20 @@ impl Editor {
                     }
                     return;
                 }
+                if let Ok(cmd) = Command::try_from(event.clone())
+                    && let System(
+                        Quit
+                            | FocusView
+                            | FocusTerminal
+                            | ToggleTerminal
+                            | FocusSidebar
+                            | FocusDebuggerSidebar
+                    ) = cmd
+                {
+                    self.process_command(cmd);
+                    return;
+                }
                 if *modifiers == KeyModifiers::CONTROL {
-                    if let Ok(cmd) = Command::try_from(event.clone())
-                        && let System(Quit | FocusView | FocusTerminal | ToggleTerminal) = cmd
-                    {
-                        self.process_command(cmd);
-                        return;
-                    }
                     if let KeyCode::Char('c') = code {
                         let _ = self.terminal_pane.write(&[0x03]);
                         return;
@@ -305,24 +321,28 @@ impl Editor {
         self.reset_quit_times();
 
         if self.sidebar_visible && self.sidebar_focus {
-            let tree_consumed = match &command {
+            let sidebar_consumed = match &command {
                 Move(m) if !m.is_selection => {
-                    match self.sidebar.handle_move(m.direction) {
-                        Ok(moved) => {
-                            if moved {
-                                self.sidebar.mark_redraw(true);
+                    if self.sidebar_mode == SidebarMode::Explorer {
+                        match self.sidebar.handle_move(m.direction) {
+                            Ok(moved) => {
+                                if moved {
+                                    self.sidebar.mark_redraw(true);
+                                }
                             }
+                            Err(e) => self.update_message(&format!("File tree error: {e}")),
                         }
-                        Err(e) => self.update_message(&format!("File tree error: {e}")),
                     }
                     true
                 }
                 Edit(InsertNewline) => {
-                    if let Err(e) = self.sidebar.handle_enter() {
-                        self.update_message(&format!("File tree error: {e}"));
+                    if self.sidebar_mode == SidebarMode::Explorer {
+                        if let Err(e) = self.sidebar.handle_enter() {
+                            self.update_message(&format!("File tree error: {e}"));
+                        }
+                        self.sidebar.mark_redraw(true);
+                        self.open_from_sidebar_selection();
                     }
-                    self.sidebar.mark_redraw(true);
-                    self.open_from_sidebar_selection();
                     true
                 }
                 Move(_) | Edit(_) => true,
@@ -340,13 +360,17 @@ impl Editor {
                     self.focus_sidebar();
                     true
                 }
+                System(FocusDebuggerSidebar) => {
+                    self.focus_debugger_sidebar();
+                    true
+                }
                 System(FocusView) => {
                     self.focus_view();
                     true
                 }
                 System(_) => false,
             };
-            if tree_consumed {
+            if sidebar_consumed {
                 return;
             }
         }
@@ -355,6 +379,7 @@ impl Editor {
             System(Quit | Resize(_)) => {}
             System(ToggleSidebar) => self.toggle_sidebar(),
             System(FocusSidebar) => self.focus_sidebar(),
+            System(FocusDebuggerSidebar) => self.focus_debugger_sidebar(),
             System(FocusView) => self.focus_view(),
             System(ToggleTerminal) => self.toggle_terminal(),
             System(FocusTerminal) => self.focus_terminal(),
@@ -390,6 +415,7 @@ impl Editor {
         self.sidebar_visible = !self.sidebar_visible;
         if self.sidebar_visible {
             self.sidebar_focus = true;
+            self.sidebar_mode = SidebarMode::Explorer;
             if let Err(e) = self.sidebar.rebuild() {
                 self.update_message(&format!("File tree error: {e}"));
             }
@@ -407,10 +433,23 @@ impl Editor {
             self.sidebar_visible = true;
             self.resize(self.terminal_size);
         }
+        self.sidebar_mode = SidebarMode::Explorer;
         self.sidebar_focus = true;
         if let Err(e) = self.sidebar.rebuild() {
             self.update_message(&format!("File tree error: {e}"));
         }
+        self.sidebar.mark_redraw(true);
+        self.view.mark_redraw(true);
+        self.debug_panel.mark_redraw(true);
+    }
+
+    fn focus_debugger_sidebar(&mut self) {
+        if !self.sidebar_visible {
+            self.sidebar_visible = true;
+            self.resize(self.terminal_size);
+        }
+        self.sidebar_mode = SidebarMode::Debugger;
+        self.sidebar_focus = true;
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
         self.debug_panel.mark_redraw(true);
@@ -1031,10 +1070,26 @@ impl Editor {
                 self.view.search_prev();
             }
             System(
-                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
-                | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
-                | Continue,
+                Quit
+                    | Resize(_)
+                    | Search
+                    | Save
+                    | Replace
+                    | ToggleSidebar
+                    | FocusSidebar
+                    | FocusDebuggerSidebar
+                    | FocusView
+                    | CreateFile
+                    | CreateFolder
+                    | ToggleTerminal
+                    | FocusTerminal
+                    | StartDebug
+                    | StopDebug
+                    | ToggleBreakpoint
+                    | StepOver
+                    | StepInto
+                    | StepOut
+                    | Continue,
             )
             | Move(_) => {}
         }
@@ -1043,10 +1098,26 @@ impl Editor {
     fn process_command_during_save(&mut self, command: Command) {
         match command {
             System(
-                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
-                | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
-                | Continue,
+                Quit
+                    | Resize(_)
+                    | Search
+                    | Save
+                    | Replace
+                    | ToggleSidebar
+                    | FocusSidebar
+                    | FocusDebuggerSidebar
+                    | FocusView
+                    | CreateFile
+                    | CreateFolder
+                    | ToggleTerminal
+                    | FocusTerminal
+                    | StartDebug
+                    | StopDebug
+                    | ToggleBreakpoint
+                    | StepOver
+                    | StepInto
+                    | StepOut
+                    | Continue,
             )
             | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
@@ -1091,10 +1162,26 @@ impl Editor {
                 self.view.search_prev();
             }
             System(
-                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
-                | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
-                | Continue,
+                Quit
+                    | Resize(_)
+                    | Search
+                    | Save
+                    | Replace
+                    | ToggleSidebar
+                    | FocusSidebar
+                    | FocusDebuggerSidebar
+                    | FocusView
+                    | CreateFile
+                    | CreateFolder
+                    | ToggleTerminal
+                    | FocusTerminal
+                    | StartDebug
+                    | StopDebug
+                    | ToggleBreakpoint
+                    | StepOver
+                    | StepInto
+                    | StepOut
+                    | Continue,
             )
             | Move(_) => {}
         }
@@ -1120,10 +1207,26 @@ impl Editor {
             }
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
             System(
-                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
-                | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
-                | Continue,
+                Quit
+                    | Resize(_)
+                    | Search
+                    | Save
+                    | Replace
+                    | ToggleSidebar
+                    | FocusSidebar
+                    | FocusDebuggerSidebar
+                    | FocusView
+                    | CreateFile
+                    | CreateFolder
+                    | ToggleTerminal
+                    | FocusTerminal
+                    | StartDebug
+                    | StopDebug
+                    | ToggleBreakpoint
+                    | StepOver
+                    | StepInto
+                    | StepOut
+                    | Continue,
             )
             | Move(_) => {}
         }
@@ -1192,10 +1295,26 @@ impl Editor {
             }
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
             System(
-                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal
-                | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto | StepOut
-                | Continue,
+                Quit
+                    | Resize(_)
+                    | Search
+                    | Save
+                    | Replace
+                    | ToggleSidebar
+                    | FocusSidebar
+                    | FocusDebuggerSidebar
+                    | FocusView
+                    | CreateFile
+                    | CreateFolder
+                    | ToggleTerminal
+                    | FocusTerminal
+                    | StartDebug
+                    | StopDebug
+                    | ToggleBreakpoint
+                    | StepOver
+                    | StepInto
+                    | StepOut
+                    | Continue,
             )
             | Move(_) => {}
         }
@@ -1443,7 +1562,11 @@ impl Editor {
             .saturating_sub(debug_rows);
         if main_height > 0 {
             if self.sidebar_visible {
-                self.sidebar.render(0);
+                if self.sidebar_mode == SidebarMode::Explorer {
+                    self.sidebar.render(0);
+                } else {
+                    self.render_debugger_sidebar(main_height + term_rows + debug_rows);
+                }
             }
             self.view.render(0);
         }
@@ -1468,7 +1591,11 @@ impl Editor {
                 col: self.command_bar.caret_position_col(),
             }
         } else if self.sidebar_visible && self.sidebar_focus {
-            self.sidebar.caret_position(0)
+            if self.sidebar_mode == SidebarMode::Explorer {
+                self.sidebar.caret_position(0)
+            } else {
+                Position { row: 0, col: 0 }
+            }
         } else if self.terminal_focus && self.terminal_visible {
             self.terminal_pane
                 .cursor_position(main_height + debug_rows, sidebar_w)
@@ -1487,6 +1614,43 @@ impl Editor {
     // =========================================
     fn update_message(&mut self, new_message: &str) {
         self.message_bar.update_message(new_message);
+    }
+
+    fn render_debugger_sidebar(&mut self, total_height: usize) {
+        let width = FileTree::WIDTH;
+        let mut lines = Vec::new();
+        lines.push(" Debugger".to_string());
+        lines.push(format!(
+            " Status: {}",
+            if self.debug_state.active {
+                "active"
+            } else {
+                "inactive"
+            }
+        ));
+        lines.push(format!(
+            " Thread: {}",
+            self.debug_state
+                .current_thread_id
+                .map_or_else(|| "-".to_string(), |id| id.to_string())
+        ));
+        lines.push(format!(" Frames: {}", self.debug_state.stack_frames.len()));
+        lines.push(format!(" Vars: {}", self.debug_state.variables.len()));
+        if let Some(frame) = self.debug_state.stack_frames.first() {
+            lines.push(" --- top frame ---".to_string());
+            lines.push(format!(" {}", frame.name));
+            lines.push(format!(" {}:{}", frame.source_path, frame.line));
+        }
+
+        for row in 0..total_height {
+            let text = lines.get(row).map_or("", String::as_str);
+            let line = if text.len() <= width {
+                format!("{text:width$.width$}", width = width)
+            } else {
+                text.chars().take(width).collect()
+            };
+            let _ = Terminal::print_row(row, 0, &line);
+        }
     }
 }
 
