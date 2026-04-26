@@ -89,20 +89,36 @@ impl Terminal {
         Ok(())
     }
 
-    pub fn print_annotated_row_with_prefix(
+    pub fn print_annotated_row_with_gutter(
         row: usize,
         col_start: usize,
-        prefix: &str,
+        marker: &str,
+        line_number_prefix: &str,
+        marker_is_breakpoint: bool,
         annotated_string: &AnnotatedString,
         highlight_prefix: bool,
     ) -> Result<(), Error> {
         Self::move_caret_to(Position { row, col: col_start })?;
         Self::queue_command(Clear(ClearType::UntilNewLine))?;
+
+        if marker_is_breakpoint {
+            Self::queue_command(SetForegroundColor(Color::Red))?;
+            Self::print(marker)?;
+            Self::reset_color()?;
+        } else if !highlight_prefix {
+            Self::queue_command(SetForegroundColor(Color::DarkGrey))?;
+            Self::print(marker)?;
+            Self::reset_color()?;
+        } else {
+            Self::print(marker)?;
+        }
+
         if !highlight_prefix {
             Self::queue_command(SetForegroundColor(Color::DarkGrey))?;
         }
-        Self::print(prefix)?;
+        Self::print(line_number_prefix)?;
         Self::reset_color()?;
+
         annotated_string
             .into_iter()
             .try_for_each(|part| -> Result<(), Error> {

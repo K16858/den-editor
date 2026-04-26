@@ -126,15 +126,20 @@ impl View {
     const GUTTER_PADDING: usize = 2;
 
     /// Line number column + optional `●` breakpoint mark (7 display columns, same width as before).
-    fn gutter_prefix(&self, line_idx: usize) -> String {
+    fn gutter_prefix_parts(&self, line_idx: usize) -> (String, String, bool) {
         let n = line_idx + 1;
-        let m = if self.breakpoint_lines.contains(&n) { "●" } else { " " };
-        format!(
+        let has_breakpoint = self.breakpoint_lines.contains(&n);
+        let marker = if has_breakpoint { "●" } else { " " };
+        let line_number_prefix = format!(
             "{m}{:>w$}{pad}",
             n,
+            m = marker,
             w = Self::GUTTER_WIDTH - 1,
             pad = " ".repeat(Self::GUTTER_PADDING)
-        )
+        );
+        // The format contains the marker as first character; split to style it separately.
+        let rest = line_number_prefix.chars().skip(1).collect::<String>();
+        (marker.to_string(), rest, has_breakpoint)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -188,7 +193,8 @@ impl View {
 
                 let left = self.scroll_offset.col;
                 let right = left + content_width;
-                let line_num_str = self.gutter_prefix(line_idx);
+                let (marker, line_number_prefix, marker_is_breakpoint) =
+                    self.gutter_prefix_parts(line_idx);
                 let query = self
                     .search_info
                     .as_ref()
@@ -211,10 +217,12 @@ impl View {
                                 selection_range,
                             });
                         state = new_state;
-                        Terminal::print_annotated_row_with_prefix(
+                        Terminal::print_annotated_row_with_gutter(
                             draw_row,
                             self.col_offset,
-                            &line_num_str,
+                            &marker,
+                            &line_number_prefix,
+                            marker_is_breakpoint,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
                         )?;
@@ -235,10 +243,12 @@ impl View {
                                 selection_range,
                             });
                         state = final_state;
-                        Terminal::print_annotated_row_with_prefix(
+                        Terminal::print_annotated_row_with_gutter(
                             draw_row,
                             self.col_offset,
-                            &line_num_str,
+                            &marker,
+                            &line_number_prefix,
+                            marker_is_breakpoint,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
                         )?;
@@ -254,10 +264,12 @@ impl View {
                                 selection_range,
                             });
                         state = new_state;
-                        Terminal::print_annotated_row_with_prefix(
+                        Terminal::print_annotated_row_with_gutter(
                             draw_row,
                             self.col_offset,
-                            &line_num_str,
+                            &marker,
+                            &line_number_prefix,
+                            marker_is_breakpoint,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
                         )?;
@@ -279,10 +291,12 @@ impl View {
                             selection_range,
                         });
                     state = final_state;
-                    Terminal::print_annotated_row_with_prefix(
+                    Terminal::print_annotated_row_with_gutter(
                         draw_row,
                         self.col_offset,
-                        &line_num_str,
+                        &marker,
+                        &line_number_prefix,
+                        marker_is_breakpoint,
                         &annotated_string,
                         line_idx == self.text_location.line_idx,
                     )?;
@@ -298,10 +312,12 @@ impl View {
                             selection_range,
                         });
                     state = new_state;
-                    Terminal::print_annotated_row_with_prefix(
+                    Terminal::print_annotated_row_with_gutter(
                         draw_row,
                         self.col_offset,
-                        &line_num_str,
+                        &marker,
+                        &line_number_prefix,
+                        marker_is_breakpoint,
                         &annotated_string,
                         line_idx == self.text_location.line_idx,
                     )?;
