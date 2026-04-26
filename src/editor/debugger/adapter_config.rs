@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,8 @@ pub struct AdapterConfig {
     pub file_extensions: Vec<String>,
     #[serde(default)]
     pub dap_adapter_type: String,
+    #[serde(default)]
+    pub launch_overrides: Value,
 }
 
 #[derive(Debug)]

@@ -19,7 +19,6 @@ use std::{
     panic::{set_hook, take_hook},
     path::{Component, Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
-    time::{SystemTime, UNIX_EPOCH},
 };
 use terminal::Terminal;
 mod command;
@@ -101,7 +100,6 @@ pub struct Editor {
     verified_breakpoint_count: usize,
     pending_continue_after_entry: bool,
     pending_launch_arguments: Option<Value>,
-    debug_artifact_paths: Vec<PathBuf>,
 }
 
 impl Editor {
@@ -169,7 +167,6 @@ impl Editor {
             verified_breakpoint_count: 0,
             pending_continue_after_entry: false,
             pending_launch_arguments: None,
-            debug_artifact_paths: Vec::new(),
         };
 
         let size = Terminal::size().unwrap_or_default();
@@ -605,9 +602,6 @@ impl Editor {
                         return;
                     }
                 };
-                if let Some(path) = launch_args.get("output").and_then(Value::as_str) {
-                    self.debug_artifact_paths.push(PathBuf::from(path));
-                }
                 self.debug_session = Some(session);
                 self.active_debug_adapter = Some(adapter.clone());
                 self.debug_state.active = true;
@@ -641,7 +635,6 @@ impl Editor {
         self.verified_breakpoint_count = 0;
         self.pending_continue_after_entry = false;
         self.pending_launch_arguments = None;
-        self.cleanup_debug_artifacts();
         self.debug_panel.update(&self.debug_state);
         self.update_message("Debug stopped.");
     }
@@ -663,7 +656,6 @@ impl Editor {
         self.verified_breakpoint_count = 0;
         self.pending_continue_after_entry = false;
         self.pending_launch_arguments = None;
-        self.cleanup_debug_artifacts();
         self.debug_panel.update(&self.debug_state);
         self.update_message(message);
     }
@@ -1173,40 +1165,35 @@ impl Editor {
             .unwrap_or_else(|| workspace.to_path_buf())
     }
 
-    fn delve_output_path() -> Option<PathBuf> {
-        if let Ok(mode) = env::var("DEN_DLV_OUTPUT")
-            && mode.eq_ignore_ascii_case("adapter-default")
-        {
-            return None;
-        }
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis());
-        let file_name = if cfg!(windows) {
-            format!("den_dlv_{millis}_{}.exe", std::process::id())
-        } else {
-            format!("den_dlv_{millis}_{}", std::process::id())
-        };
-        if let Ok(path) = env::var("DEN_DLV_OUTPUT_PATH")
-            && !path.trim().is_empty()
-        {
-            return Some(PathBuf::from(path));
-        }
-        if let Ok(dir) = env::var("DEN_DLV_OUTPUT_DIR")
-            && !dir.trim().is_empty()
-        {
-            let dir_path = PathBuf::from(dir);
-            if std::fs::create_dir_all(&dir_path).is_ok() {
-                return Some(dir_path.join(file_name));
+    fn expand_launch_templates(value: &mut Value) {
+        match value {
+            Value::String(s) => {
+                let expanded = s
+                    .replace("${tmpDir}", &env::temp_dir().to_string_lossy())
+                    .replace("${pid}", &std::process::id().to_string());
+                *s = expanded;
             }
+            Value::Array(arr) => {
+                for item in arr {
+                    Self::expand_launch_templates(item);
+                }
+            }
+            Value::Object(map) => {
+                for item in map.values_mut() {
+                    Self::expand_launch_templates(item);
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) => {}
         }
-        Some(env::temp_dir().join(file_name))
     }
 
-    fn cleanup_debug_artifacts(&mut self) {
-        let artifacts = std::mem::take(&mut self.debug_artifact_paths);
-        for path in artifacts {
-            let _ = std::fs::remove_file(path);
+    fn merge_launch_overrides(base: &mut Value, overrides: &Value) {
+        let (Some(base_obj), Some(override_obj)) = (base.as_object_mut(), overrides.as_object())
+        else {
+            return;
+        };
+        for (key, value) in override_obj {
+            base_obj.insert(key.clone(), value.clone());
         }
     }
 
@@ -1261,14 +1248,9 @@ impl Editor {
                 "cwd": launch_dir,
                 "stopOnEntry": true
             });
-            if let Some(path) = Self::delve_output_path()
-                && let Some(obj) = args.as_object_mut()
-            {
-                obj.insert(
-                    "output".to_string(),
-                    Value::String(path.to_string_lossy().to_string()),
-                );
-            }
+            let mut overrides = adapter.launch_overrides.clone();
+            Self::expand_launch_templates(&mut overrides);
+            Self::merge_launch_overrides(&mut args, &overrides);
             return Ok(args);
         }
 
