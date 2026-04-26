@@ -95,20 +95,40 @@ impl Terminal {
         marker: &str,
         line_number_prefix: &str,
         marker_is_breakpoint: bool,
+        marker_is_stopped: bool,
         annotated_string: &AnnotatedString,
         highlight_prefix: bool,
     ) -> Result<(), Error> {
         Self::move_caret_to(Position { row, col: col_start })?;
         Self::queue_command(Clear(ClearType::UntilNewLine))?;
 
-        if marker_is_breakpoint {
+        let row_bg = marker_is_stopped.then_some(Color::DarkBlue);
+        if let Some(bg) = row_bg {
+            Self::queue_command(SetBackgroundColor(bg))?;
+        }
+
+        if marker_is_stopped {
+            Self::queue_command(SetForegroundColor(Color::Yellow))?;
+            Self::print(marker)?;
+            if let Some(bg) = row_bg {
+                Self::queue_command(SetBackgroundColor(bg))?;
+            }
+        } else if marker_is_breakpoint {
             Self::queue_command(SetForegroundColor(Color::Red))?;
             Self::print(marker)?;
-            Self::reset_color()?;
+            if let Some(bg) = row_bg {
+                Self::queue_command(SetBackgroundColor(bg))?;
+            } else {
+                Self::reset_color()?;
+            }
         } else if !highlight_prefix {
             Self::queue_command(SetForegroundColor(Color::DarkGrey))?;
             Self::print(marker)?;
-            Self::reset_color()?;
+            if let Some(bg) = row_bg {
+                Self::queue_command(SetBackgroundColor(bg))?;
+            } else {
+                Self::reset_color()?;
+            }
         } else {
             Self::print(marker)?;
         }
@@ -125,12 +145,21 @@ impl Terminal {
                 if let Some(annotation_type) = part.annotation_type {
                     let attribute: Attribute = annotation_type.into();
                     Self::set_attribute(&attribute)?;
+                    if let Some(bg) = row_bg {
+                        Self::queue_command(SetBackgroundColor(bg))?;
+                    }
                 }
 
                 Self::print(part.string)?;
-                Self::reset_color()?;
+                if let Some(bg) = row_bg {
+                    Self::queue_command(ResetColor)?;
+                    Self::queue_command(SetBackgroundColor(bg))?;
+                } else {
+                    Self::reset_color()?;
+                }
                 Ok(())
             })?;
+        Self::reset_color()?;
         Ok(())
     }
 

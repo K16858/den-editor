@@ -63,6 +63,8 @@ pub struct View {
     undo_history: UndoHistory,
     /// DAP 行番号（1-based）。現在バッファの行に印を出す。
     breakpoint_lines: HashSet<usize>,
+    /// Current paused line (1-based) for the active file.
+    debug_stop_line: Option<usize>,
 }
 
 impl View {
@@ -84,6 +86,16 @@ impl View {
             .collect();
         if new != self.breakpoint_lines {
             self.breakpoint_lines = new;
+            self.mark_redraw(true);
+        }
+    }
+
+    pub fn set_debug_stop_line(&mut self, line: Option<i64>) {
+        let normalized = line
+            .and_then(|l| (l > 0).then_some(l))
+            .and_then(|l| usize::try_from(l).ok());
+        if normalized != self.debug_stop_line {
+            self.debug_stop_line = normalized;
             self.mark_redraw(true);
         }
     }
@@ -125,11 +137,18 @@ impl View {
     const GUTTER_WIDTH: usize = 5;
     const GUTTER_PADDING: usize = 2;
 
-    /// Line number column + optional `●` breakpoint mark (7 display columns, same width as before).
-    fn gutter_prefix_parts(&self, line_idx: usize) -> (String, String, bool) {
+    /// Line number column + optional markers (breakpoint/stopped) in same 7-col layout.
+    fn gutter_prefix_parts(&self, line_idx: usize) -> (String, String, bool, bool) {
         let n = line_idx + 1;
         let has_breakpoint = self.breakpoint_lines.contains(&n);
-        let marker = if has_breakpoint { "●" } else { " " };
+        let is_stopped_line = self.debug_stop_line.is_some_and(|line| line == n);
+        let marker = if is_stopped_line {
+            "▶"
+        } else if has_breakpoint {
+            "●"
+        } else {
+            " "
+        };
         let line_number_prefix = format!(
             "{m}{:>w$}{pad}",
             n,
@@ -139,7 +158,7 @@ impl View {
         );
         // The format contains the marker as first character; split to style it separately.
         let rest = line_number_prefix.chars().skip(1).collect::<String>();
-        (marker.to_string(), rest, has_breakpoint)
+        (marker.to_string(), rest, has_breakpoint, is_stopped_line)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -193,7 +212,7 @@ impl View {
 
                 let left = self.scroll_offset.col;
                 let right = left + content_width;
-                let (marker, line_number_prefix, marker_is_breakpoint) =
+                let (marker, line_number_prefix, marker_is_breakpoint, marker_is_stopped) =
                     self.gutter_prefix_parts(line_idx);
                 let query = self
                     .search_info
@@ -223,6 +242,7 @@ impl View {
                             &marker,
                             &line_number_prefix,
                             marker_is_breakpoint,
+                            marker_is_stopped,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
                         )?;
@@ -249,6 +269,7 @@ impl View {
                             &marker,
                             &line_number_prefix,
                             marker_is_breakpoint,
+                            marker_is_stopped,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
                         )?;
@@ -270,6 +291,7 @@ impl View {
                             &marker,
                             &line_number_prefix,
                             marker_is_breakpoint,
+                            marker_is_stopped,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
                         )?;
@@ -297,6 +319,7 @@ impl View {
                         &marker,
                         &line_number_prefix,
                         marker_is_breakpoint,
+                        marker_is_stopped,
                         &annotated_string,
                         line_idx == self.text_location.line_idx,
                     )?;
@@ -318,6 +341,7 @@ impl View {
                         &marker,
                         &line_number_prefix,
                         marker_is_breakpoint,
+                        marker_is_stopped,
                         &annotated_string,
                         line_idx == self.text_location.line_idx,
                     )?;

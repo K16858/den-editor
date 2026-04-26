@@ -31,25 +31,27 @@ impl DebugPanel {
     pub fn update(&mut self, state: &DebugState) {
         let mut lines = Vec::new();
         if state.active {
+            lines.push("Debug Session".to_string());
             lines.push(format!(
-                "Debug: active  thread={}",
+                "Status: active  thread={}",
                 state
                     .current_thread_id
                     .map_or_else(|| "-".to_string(), |id| id.to_string())
             ));
+            lines.push("Frame".to_string());
             if let Some(frame) = state.stack_frames.first() {
                 lines.push(format!(
-                    "Frame: {} ({}:{}:{})",
+                    "  {} ({}:{}:{})",
                     frame.name, frame.source_path, frame.line, frame.column
                 ));
             } else {
-                lines.push("Frame: -".to_string());
+                lines.push("  -".to_string());
             }
+            lines.push("Variables".to_string());
             if state.variables.is_empty() {
-                lines.push("Variables: -".to_string());
+                lines.push("  -".to_string());
             } else {
-                lines.push("Variables:".to_string());
-                for var in state.variables.iter().take(self.rows.saturating_sub(3)) {
+                for var in state.variables.iter().take(self.rows.saturating_sub(6)) {
                     lines.push(format!("  {} = {}", var.name, var.value));
                 }
             }

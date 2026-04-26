@@ -631,6 +631,7 @@ impl Editor {
         self.debug_state.threads.clear();
         self.debug_state.stack_frames.clear();
         self.debug_state.variables.clear();
+        self.view.set_debug_stop_line(None);
         self.debug_stack_after_threads = false;
         self.stacktrace_retry_attempted = false;
         self.verified_breakpoint_count = 0;
@@ -652,6 +653,7 @@ impl Editor {
         self.debug_state.threads.clear();
         self.debug_state.stack_frames.clear();
         self.debug_state.variables.clear();
+        self.view.set_debug_stop_line(None);
         self.debug_stack_after_threads = false;
         self.stacktrace_retry_attempted = false;
         self.verified_breakpoint_count = 0;
@@ -944,7 +946,19 @@ impl Editor {
                     })
                     .unwrap_or_default();
                 let frame_id = frames.first().map_or(0, |f| f.id);
+                let pause_line = frames.first().map(|f| f.line);
+                let is_current_file = frames.first().is_some_and(|f| {
+                    self.view.file_path().is_some_and(|path| {
+                        let current = Self::dap_source_path_string(&path);
+                        current == f.source_path
+                    })
+                });
                 self.debug_state.stack_frames = frames;
+                if is_current_file {
+                    self.view.set_debug_stop_line(pause_line);
+                } else {
+                    self.view.set_debug_stop_line(None);
+                }
                 if frame_id != 0 {
                     self.request_scopes(frame_id);
                 }
