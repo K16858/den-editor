@@ -390,6 +390,7 @@ impl Editor {
             System(ToggleTerminal) => self.toggle_terminal(),
             System(FocusTerminal) => self.focus_terminal(),
             System(StartDebug) => {
+                self.focus_debugger_sidebar();
                 if self.debug_session.is_some() {
                     self.continue_debug();
                 } else {
