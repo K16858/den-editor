@@ -11,7 +11,7 @@ use position::Position;
 use size::Size;
 mod document_status;
 use document_status::DocumentStatus;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     env,
@@ -19,6 +19,7 @@ use std::{
     panic::{set_hook, take_hook},
     path::{Component, Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use terminal::Terminal;
 mod command;
@@ -95,6 +96,12 @@ pub struct Editor {
     debug_state: DebugState,
     breakpoints: HashMap<PathBuf, Vec<i64>>,
     pending_configuration_done: bool,
+    debug_stack_after_threads: bool,
+    stacktrace_retry_attempted: bool,
+    verified_breakpoint_count: usize,
+    pending_continue_after_entry: bool,
+    pending_launch_arguments: Option<Value>,
+    debug_artifact_paths: Vec<PathBuf>,
 }
 
 impl Editor {
@@ -157,6 +164,12 @@ impl Editor {
             debug_state: DebugState::default(),
             breakpoints: HashMap::new(),
             pending_configuration_done: false,
+            debug_stack_after_threads: false,
+            stacktrace_retry_attempted: false,
+            verified_breakpoint_count: 0,
+            pending_continue_after_entry: false,
+            pending_launch_arguments: None,
+            debug_artifact_paths: Vec::new(),
         };
 
         let size = Terminal::size().unwrap_or_default();
@@ -247,12 +260,8 @@ impl Editor {
                 }
                 if let Ok(cmd) = Command::try_from(event.clone())
                     && let System(
-                        Quit
-                            | FocusView
-                            | FocusTerminal
-                            | ToggleTerminal
-                            | FocusSidebar
-                            | FocusDebuggerSidebar
+                        Quit | FocusView | FocusTerminal | ToggleTerminal | FocusSidebar
+                        | FocusDebuggerSidebar,
                     ) = cmd
                 {
                     self.process_command(cmd);
@@ -561,7 +570,19 @@ impl Editor {
             self.update_message(&msg);
             return;
         }
-        match DapSession::start(&adapter) {
+        let debug_cwd = if adapter.dap_adapter_type.eq_ignore_ascii_case("dlv-dap") {
+            let file_path = self.view.file_path();
+            Some(
+                file_path
+                    .as_deref()
+                    .map(|p| Self::resolve_go_launch_dir(p, self.sidebar.workspace_root()))
+                    .unwrap_or_else(|| self.sidebar.workspace_root().to_path_buf()),
+            )
+        } else {
+            None
+        };
+
+        match DapSession::start(&adapter, debug_cwd.as_deref()) {
             Ok(mut session) => {
                 if let Err(e) = session.send_request(
                     "initialize",
@@ -584,16 +605,18 @@ impl Editor {
                         return;
                     }
                 };
-                if let Err(e) = session.send_request("launch", launch_args) {
-                    self.update_message(&format!("Debug launch error: {e}"));
-                    return;
+                if let Some(path) = launch_args.get("output").and_then(Value::as_str) {
+                    self.debug_artifact_paths.push(PathBuf::from(path));
                 }
                 self.debug_session = Some(session);
                 self.active_debug_adapter = Some(adapter.clone());
                 self.debug_state.active = true;
-                self.pending_configuration_done = true;
+                self.pending_launch_arguments = Some(launch_args);
                 self.debug_panel.update(&self.debug_state);
-                self.update_message(&format!("Debug started: {}", adapter.display_name));
+                self.update_message(&format!(
+                    "Debug initializing: {}",
+                    adapter.display_name
+                ));
             }
             Err(e) => {
                 self.update_message(&format!("Debug start error: {e}"));
@@ -613,12 +636,41 @@ impl Editor {
         self.debug_state.threads.clear();
         self.debug_state.stack_frames.clear();
         self.debug_state.variables.clear();
+        self.debug_stack_after_threads = false;
+        self.stacktrace_retry_attempted = false;
+        self.verified_breakpoint_count = 0;
+        self.pending_continue_after_entry = false;
+        self.pending_launch_arguments = None;
+        self.cleanup_debug_artifacts();
         self.debug_panel.update(&self.debug_state);
         self.update_message("Debug stopped.");
     }
 
+    fn stop_debug_with_message(&mut self, message: &str) {
+        if let Some(session) = &mut self.debug_session {
+            session.stop();
+        }
+        self.debug_session = None;
+        self.active_debug_adapter = None;
+        self.debug_state.active = false;
+        self.pending_configuration_done = false;
+        self.debug_state.current_thread_id = None;
+        self.debug_state.threads.clear();
+        self.debug_state.stack_frames.clear();
+        self.debug_state.variables.clear();
+        self.debug_stack_after_threads = false;
+        self.stacktrace_retry_attempted = false;
+        self.verified_breakpoint_count = 0;
+        self.pending_continue_after_entry = false;
+        self.pending_launch_arguments = None;
+        self.cleanup_debug_artifacts();
+        self.debug_panel.update(&self.debug_state);
+        self.update_message(message);
+    }
+
     fn poll_debug_events(&mut self) {
         let mut should_stop = false;
+        let mut stop_message: Option<String> = None;
         let mut had_activity = false;
         loop {
             let event = self.debug_session.as_ref().and_then(DapSession::try_recv);
@@ -628,32 +680,100 @@ impl Editor {
                 debugger::DapEvent::Message(envelope) => match envelope.message {
                     debugger::DapMessage::Event { event, body, .. } => {
                         if event == "initialized" {
-                            self.sync_all_breakpoints();
-                            if self.pending_configuration_done {
-                                self.with_debug_session(|session| {
-                                    session
-                                        .send_request("configurationDone", json!({}))
-                                        .map_err(|e| format!("Debug configuration error: {e}"))?;
-                                    Ok(())
-                                });
-                                self.pending_configuration_done = false;
-                            }
+                            self.send_configuration_done_if_pending();
                         } else if event == "stopped" {
+                            let reason = body
+                                .get("reason")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("");
+                            let is_dlv = self
+                                .active_debug_adapter
+                                .as_ref()
+                                .is_some_and(|a| a.dap_adapter_type.eq_ignore_ascii_case("dlv-dap"));
+                            if is_dlv && reason == "entry" {
+                                // Delve is paused at entry; re-sync breakpoints now and continue.
+                                self.pending_continue_after_entry = false;
+                                self.sync_all_breakpoints();
+                                self.update_message(
+                                    "Delve entry stop -> breakpoints synced, continuing...",
+                                );
+                                self.continue_debug();
+                                continue;
+                            }
+                            // Always resolve a valid thread id from `threads` response first.
+                            // Some adapters (notably dlv) may provide a stopped thread id that
+                            // is not directly usable for stackTrace.
                             self.debug_state.current_thread_id =
-                                body.get("threadId").and_then(serde_json::Value::as_i64);
+                                body.get("threadId").and_then(Self::dap_json_as_i64);
+                            self.debug_stack_after_threads = true;
+                            self.stacktrace_retry_attempted = false;
                             self.request_threads();
-                            self.request_stack_trace();
                             self.update_message("Debug paused.");
+                        } else if event == "terminated" || event == "exited" {
+                            // Adapter notified debuggee exit; stop session cleanly.
+                            let code = body
+                                .get("exitCode")
+                                .and_then(Self::dap_json_as_i64)
+                                .unwrap_or(0);
+                            stop_message = Some(format!("Debuggee exited (code {code})."));
+                            should_stop = true;
                         }
                     }
                     debugger::DapMessage::Response {
                         success,
                         command,
+                        message,
                         body,
                         ..
                     } => {
                         if success {
+                            if command == "initialize" {
+                                self.send_launch_if_pending();
+                            }
                             self.handle_debug_response(&command, &body);
+                            if command == "launch" {
+                                // dlv-dap may not emit `initialized`; fallback here.
+                                self.send_configuration_done_if_pending();
+                                if let Some(adapter) = &self.active_debug_adapter {
+                                    self.update_message(&format!(
+                                        "Debug started: {}",
+                                        adapter.display_name
+                                    ));
+                                } else {
+                                    self.update_message("Debug started.");
+                                }
+                            }
+                        } else {
+                            let detail = Self::dap_error_detail(&message, &body);
+                            if command == "stackTrace"
+                                && detail.contains("unknown goroutine 1")
+                                && self
+                                    .active_debug_adapter
+                                    .as_ref()
+                                    .is_some_and(|a| {
+                                        a.dap_adapter_type.eq_ignore_ascii_case("dlv-dap")
+                                    })
+                            {
+                                self.update_message(
+                                    "Delve entry stop produced invalid goroutine. Continuing...",
+                                );
+                                self.continue_debug();
+                                continue;
+                            }
+                            if command == "stackTrace"
+                                && detail.contains("unknown goroutine")
+                                && self.try_retry_stacktrace_for_dlv()
+                            {
+                                continue;
+                            }
+                            if command == "stackTrace"
+                                && detail.contains("has exited with status")
+                            {
+                                stop_message = Some("Debuggee has already exited.".to_string());
+                                should_stop = true;
+                                continue;
+                            }
+                            self.update_message(&format!("DAP {command} failed: {detail}"));
                         }
                     }
                     debugger::DapMessage::Request { .. } => {}
@@ -663,7 +783,11 @@ impl Editor {
             }
         }
         if should_stop {
-            self.stop_debug();
+            if let Some(msg) = stop_message {
+                self.stop_debug_with_message(&msg);
+            } else {
+                self.stop_debug();
+            }
         } else if had_activity {
             self.status_bar.mark_redraw(true);
             self.debug_panel.update(&self.debug_state);
@@ -679,8 +803,42 @@ impl Editor {
         });
     }
 
+    fn send_configuration_done_if_pending(&mut self) {
+        if !self.pending_configuration_done {
+            return;
+        }
+        self.sync_all_breakpoints();
+        self.with_debug_session(|session| {
+            session
+                .send_request("configurationDone", json!({}))
+                .map_err(|e| format!("DAP configurationDone failed: {e}"))?;
+            Ok(())
+        });
+        self.pending_configuration_done = false;
+    }
+
+    fn send_launch_if_pending(&mut self) {
+        let Some(arguments) = self.pending_launch_arguments.take() else {
+            return;
+        };
+        self.with_debug_session(|session| {
+            session
+                .send_request("launch", arguments.clone())
+                .map_err(|e| format!("Debug launch error: {e}"))?;
+            Ok(())
+        });
+        // Usually sent after `initialized`. For adapters that skip it (e.g. some dlv
+        // flows), we also send this after successful `launch` response.
+        self.pending_configuration_done = true;
+    }
+
     fn request_stack_trace(&mut self) {
-        let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
+        let Some(thread_id) = self.debug_state.current_thread_id else {
+            return;
+        };
+        if thread_id == 0 {
+            return;
+        }
         self.with_debug_session(|session| {
             session
                 .send_request(
@@ -723,7 +881,7 @@ impl Editor {
                     .map(|arr| {
                         arr.iter()
                             .map(|v| debugger::ThreadSummary {
-                                id: v.get("id").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                                id: v.get("id").and_then(Self::dap_json_as_i64).unwrap_or(0),
                                 name: v
                                     .get("name")
                                     .and_then(serde_json::Value::as_str)
@@ -734,6 +892,32 @@ impl Editor {
                     })
                     .unwrap_or_default();
                 self.debug_state.threads = threads;
+                if self.debug_stack_after_threads {
+                    self.debug_stack_after_threads = false;
+                    // Prefer stopped thread id only if it exists in the current thread list.
+                    let stopped_id = self.debug_state.current_thread_id;
+                    let resolved = stopped_id.and_then(|id| {
+                        self.debug_state
+                            .threads
+                            .iter()
+                            .any(|t| t.id == id && t.id != 0)
+                            .then_some(id)
+                    });
+                    if resolved.is_some() {
+                        self.debug_state.current_thread_id = resolved;
+                    } else if let Some(t) = self
+                        .debug_state
+                        .threads
+                        .iter()
+                        .find(|t| t.id != 0 && t.id != 1)
+                        .or_else(|| self.debug_state.threads.iter().find(|t| t.id != 0))
+                    {
+                        self.debug_state.current_thread_id = Some(t.id);
+                    }
+                    if self.debug_state.current_thread_id.is_some() {
+                        self.request_stack_trace();
+                    }
+                }
             }
             "stackTrace" => {
                 let frames = body
@@ -742,7 +926,7 @@ impl Editor {
                     .map(|arr| {
                         arr.iter()
                             .map(|v| debugger::StackFrameSummary {
-                                id: v.get("id").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                                id: v.get("id").and_then(Self::dap_json_as_i64).unwrap_or(0),
                                 name: v
                                     .get("name")
                                     .and_then(serde_json::Value::as_str)
@@ -776,9 +960,20 @@ impl Editor {
                 let reference = body
                     .get("scopes")
                     .and_then(serde_json::Value::as_array)
-                    .and_then(|arr| arr.first())
-                    .and_then(|scope| scope.get("variablesReference"))
-                    .and_then(serde_json::Value::as_i64)
+                    .and_then(|arr| {
+                        arr.iter().find_map(|scope| {
+                            let r = scope.get("variablesReference")?;
+                            let n = Self::dap_json_as_i64(r)?;
+                            (n > 0).then_some(n)
+                        })
+                    })
+                    .or_else(|| {
+                        body.get("scopes")
+                            .and_then(serde_json::Value::as_array)
+                            .and_then(|a| a.first())
+                            .and_then(|s| s.get("variablesReference"))
+                            .and_then(Self::dap_json_as_i64)
+                    })
                     .unwrap_or(0);
                 if reference != 0 {
                     self.request_variables(reference);
@@ -790,33 +985,228 @@ impl Editor {
                     .and_then(serde_json::Value::as_array)
                     .map(|arr| {
                         arr.iter()
-                            .map(|v| debugger::VariableSummary {
-                                name: v
-                                    .get("name")
-                                    .and_then(serde_json::Value::as_str)
-                                    .unwrap_or("")
-                                    .to_string(),
-                                value: v
+                            .map(|v| {
+                                let val = v
                                     .get("value")
-                                    .and_then(serde_json::Value::as_str)
-                                    .unwrap_or("")
-                                    .to_string(),
-                                type_name: v
-                                    .get("type")
-                                    .and_then(serde_json::Value::as_str)
-                                    .unwrap_or("")
-                                    .to_string(),
-                                variables_reference: v
-                                    .get("variablesReference")
-                                    .and_then(serde_json::Value::as_i64)
-                                    .unwrap_or(0),
+                                    .map(Self::dap_json_as_display)
+                                    .unwrap_or_default();
+                                debugger::VariableSummary {
+                                    name: v
+                                        .get("name")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    value: val,
+                                    type_name: v
+                                        .get("type")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    variables_reference: v
+                                        .get("variablesReference")
+                                        .and_then(Self::dap_json_as_i64)
+                                        .unwrap_or(0),
+                                }
                             })
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
                 self.debug_state.variables = vars;
             }
+            "setBreakpoints" => {
+                let (verified, total, first_reason) = body
+                    .get("breakpoints")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|arr| {
+                        let ok = arr
+                            .iter()
+                            .filter(|bp| {
+                                bp.get("verified")
+                                    .and_then(serde_json::Value::as_bool)
+                                    .unwrap_or(false)
+                            })
+                            .count();
+                        let reason = arr.iter().find_map(|bp| {
+                            let is_verified = bp
+                                .get("verified")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false);
+                            if is_verified {
+                                None
+                            } else {
+                                bp.get("message")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_string)
+                            }
+                        });
+                        (ok, arr.len(), reason)
+                    })
+                    .unwrap_or((0, 0, None));
+                self.verified_breakpoint_count = verified;
+                if total > 0 {
+                    if verified == 0 {
+                        if let Some(reason) = first_reason {
+                            self.update_message(&format!(
+                                "Breakpoints verified: 0/{total} ({reason})"
+                            ));
+                        } else {
+                            self.update_message(&format!("Breakpoints verified: 0/{total}"));
+                        }
+                    } else {
+                        self.update_message(&format!("Breakpoints verified: {verified}/{total}"));
+                    }
+                }
+            }
             _ => {}
+        }
+    }
+
+    fn dap_json_as_i64(v: &Value) -> Option<i64> {
+        v.as_i64()
+            .or_else(|| v.as_u64().and_then(|u| i64::try_from(u).ok()))
+            .or_else(|| {
+                v.as_f64()
+                    .filter(|f| f.is_finite() && f.fract() == 0.0)
+                    .map(|f| f as i64)
+            })
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    }
+
+    fn dap_json_as_display(v: &Value) -> String {
+        match v {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Null => String::new(),
+            _ => v.to_string(),
+        }
+    }
+
+    fn dap_error_detail(message: &str, body: &Value) -> String {
+        // Many adapters (including dlv) put the real reason in body.error.{format,message}.
+        if let Some(err) = body.get("error") {
+            if let Some(s) = err.get("format").and_then(Value::as_str) {
+                return s.to_string();
+            }
+            if let Some(s) = err.get("message").and_then(Value::as_str) {
+                return s.to_string();
+            }
+            if let Some(s) = err.as_str() {
+                return s.to_string();
+            }
+        }
+        if !message.is_empty() {
+            return message.to_string();
+        }
+        body.to_string()
+    }
+
+    fn try_retry_stacktrace_for_dlv(&mut self) -> bool {
+        let is_dlv = self
+            .active_debug_adapter
+            .as_ref()
+            .is_some_and(|a| a.dap_adapter_type.eq_ignore_ascii_case("dlv-dap"));
+        if !is_dlv || self.stacktrace_retry_attempted {
+            return false;
+        }
+        let current = self.debug_state.current_thread_id.unwrap_or(0);
+        let next = self
+            .debug_state
+            .threads
+            .iter()
+            .find(|t| t.id != 0 && t.id != 1 && t.id != current)
+            .or_else(|| {
+                self.debug_state
+                    .threads
+                    .iter()
+                    .find(|t| t.id != 0 && t.id != current)
+            })
+            .map(|t| t.id);
+        let Some(next_id) = next else {
+            return false;
+        };
+        self.stacktrace_retry_attempted = true;
+        self.debug_state.current_thread_id = Some(next_id);
+        self.request_stack_trace();
+        self.update_message(&format!("Retrying stackTrace with goroutine {next_id}..."));
+        true
+    }
+
+    fn dap_source_path_string(path: &Path) -> String {
+        let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        #[cfg(windows)]
+        {
+            // Some debug adapters fail to bind breakpoints when paths include the `\\?\` prefix.
+            let raw = resolved.to_string_lossy();
+            if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+                return stripped.to_string();
+            }
+            return raw.to_string();
+        }
+        #[cfg(not(windows))]
+        {
+            resolved.to_string_lossy().to_string()
+        }
+    }
+
+    fn resolve_go_launch_dir(file_path: &Path, workspace: &Path) -> PathBuf {
+        // Prefer the nearest directory containing go.mod starting from the active file directory.
+        let mut dir = file_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| workspace.to_path_buf());
+        loop {
+            if dir.join("go.mod").is_file() {
+                return dir;
+            }
+            let Some(parent) = dir.parent() else { break };
+            let parent = parent.to_path_buf();
+            if parent == dir {
+                break;
+            }
+            dir = parent;
+        }
+        // Fallback to active file directory when module root is not found.
+        file_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| workspace.to_path_buf())
+    }
+
+    fn delve_output_path() -> Option<PathBuf> {
+        if let Ok(mode) = env::var("DEN_DLV_OUTPUT")
+            && mode.eq_ignore_ascii_case("adapter-default")
+        {
+            return None;
+        }
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        let file_name = if cfg!(windows) {
+            format!("den_dlv_{millis}_{}.exe", std::process::id())
+        } else {
+            format!("den_dlv_{millis}_{}", std::process::id())
+        };
+        if let Ok(path) = env::var("DEN_DLV_OUTPUT_PATH")
+            && !path.trim().is_empty()
+        {
+            return Some(PathBuf::from(path));
+        }
+        if let Ok(dir) = env::var("DEN_DLV_OUTPUT_DIR")
+            && !dir.trim().is_empty()
+        {
+            let dir_path = PathBuf::from(dir);
+            if std::fs::create_dir_all(&dir_path).is_ok() {
+                return Some(dir_path.join(file_name));
+            }
+        }
+        Some(env::temp_dir().join(file_name))
+    }
+
+    fn cleanup_debug_artifacts(&mut self) {
+        let artifacts = std::mem::take(&mut self.debug_artifact_paths);
+        for path in artifacts {
+            let _ = std::fs::remove_file(path);
         }
     }
 
@@ -860,14 +1250,26 @@ impl Editor {
         }
 
         if adapter.dap_adapter_type.eq_ignore_ascii_case("dlv-dap") {
-            return Ok(json!({
-                "name": "Debug workspace package",
+            let launch_dir = Self::resolve_go_launch_dir(&file_path, &workspace);
+            let mut args = json!({
+                "name": "Debug current Go package",
                 "type": "go",
                 "request": "launch",
                 "mode": "debug",
-                "program": workspace,
-                "cwd": workspace
-            }));
+                // `dlv dap` on Windows is more reliable with program="." + cwd=<package dir>.
+                "program": ".",
+                "cwd": launch_dir,
+                "stopOnEntry": true
+            });
+            if let Some(path) = Self::delve_output_path()
+                && let Some(obj) = args.as_object_mut()
+            {
+                obj.insert(
+                    "output".to_string(),
+                    Value::String(path.to_string_lossy().to_string()),
+                );
+            }
+            return Ok(args);
         }
 
         Err(format!(
@@ -979,17 +1381,22 @@ impl Editor {
                     .send_request(
                         "setBreakpoints",
                         json!({
-                            "source": { "path": path },
+                            "source": { "path": Self::dap_source_path_string(&path) },
                             "breakpoints": lines.iter().map(|line| json!({ "line": line })).collect::<Vec<_>>()
                         }),
                     )
                     .map_err(|e| format!("setBreakpoints error: {e}"))?;
                 Ok(())
             });
+            if added {
+                self.update_message(&format!("Breakpoint set at line {line}."));
+            } else {
+                self.update_message(&format!("Breakpoint removed at line {line}."));
+            }
         } else if added {
-            self.update_message("Breakpoint set (F5 to start debug).");
+            self.update_message(&format!("Breakpoint set at line {line} (F5 to start debug)."));
         } else {
-            self.update_message("Breakpoint removed.");
+            self.update_message(&format!("Breakpoint removed at line {line}."));
         }
         self.view.mark_redraw(true);
     }
@@ -1002,7 +1409,7 @@ impl Editor {
                     .send_request(
                         "setBreakpoints",
                         json!({
-                            "source": { "path": path },
+                            "source": { "path": Self::dap_source_path_string(path) },
                             "breakpoints": lines.iter().map(|line| json!({ "line": line })).collect::<Vec<_>>()
                         }),
                     )
@@ -1081,26 +1488,10 @@ impl Editor {
                 self.view.search_prev();
             }
             System(
-                Quit
-                    | Resize(_)
-                    | Search
-                    | Save
-                    | Replace
-                    | ToggleSidebar
-                    | FocusSidebar
-                    | FocusDebuggerSidebar
-                    | FocusView
-                    | CreateFile
-                    | CreateFolder
-                    | ToggleTerminal
-                    | FocusTerminal
-                    | StartDebug
-                    | StopDebug
-                    | ToggleBreakpoint
-                    | StepOver
-                    | StepInto
-                    | StepOut
-                    | Continue,
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
+                | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
+                | StepOut | Continue,
             )
             | Move(_) => {}
         }
@@ -1109,26 +1500,10 @@ impl Editor {
     fn process_command_during_save(&mut self, command: Command) {
         match command {
             System(
-                Quit
-                    | Resize(_)
-                    | Search
-                    | Save
-                    | Replace
-                    | ToggleSidebar
-                    | FocusSidebar
-                    | FocusDebuggerSidebar
-                    | FocusView
-                    | CreateFile
-                    | CreateFolder
-                    | ToggleTerminal
-                    | FocusTerminal
-                    | StartDebug
-                    | StopDebug
-                    | ToggleBreakpoint
-                    | StepOver
-                    | StepInto
-                    | StepOut
-                    | Continue,
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
+                | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
+                | StepOut | Continue,
             )
             | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
@@ -1173,26 +1548,10 @@ impl Editor {
                 self.view.search_prev();
             }
             System(
-                Quit
-                    | Resize(_)
-                    | Search
-                    | Save
-                    | Replace
-                    | ToggleSidebar
-                    | FocusSidebar
-                    | FocusDebuggerSidebar
-                    | FocusView
-                    | CreateFile
-                    | CreateFolder
-                    | ToggleTerminal
-                    | FocusTerminal
-                    | StartDebug
-                    | StopDebug
-                    | ToggleBreakpoint
-                    | StepOver
-                    | StepInto
-                    | StepOut
-                    | Continue,
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
+                | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
+                | StepOut | Continue,
             )
             | Move(_) => {}
         }
@@ -1218,26 +1577,10 @@ impl Editor {
             }
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
             System(
-                Quit
-                    | Resize(_)
-                    | Search
-                    | Save
-                    | Replace
-                    | ToggleSidebar
-                    | FocusSidebar
-                    | FocusDebuggerSidebar
-                    | FocusView
-                    | CreateFile
-                    | CreateFolder
-                    | ToggleTerminal
-                    | FocusTerminal
-                    | StartDebug
-                    | StopDebug
-                    | ToggleBreakpoint
-                    | StepOver
-                    | StepInto
-                    | StepOut
-                    | Continue,
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
+                | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
+                | StepOut | Continue,
             )
             | Move(_) => {}
         }
@@ -1306,26 +1649,10 @@ impl Editor {
             }
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
             System(
-                Quit
-                    | Resize(_)
-                    | Search
-                    | Save
-                    | Replace
-                    | ToggleSidebar
-                    | FocusSidebar
-                    | FocusDebuggerSidebar
-                    | FocusView
-                    | CreateFile
-                    | CreateFolder
-                    | ToggleTerminal
-                    | FocusTerminal
-                    | StartDebug
-                    | StopDebug
-                    | ToggleBreakpoint
-                    | StepOver
-                    | StepInto
-                    | StepOut
-                    | Continue,
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
+                | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
+                | StepOut | Continue,
             )
             | Move(_) => {}
         }

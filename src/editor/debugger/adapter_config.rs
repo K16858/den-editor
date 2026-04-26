@@ -31,11 +31,8 @@ pub fn discover_adapter_configs() -> Vec<AdapterConfig> {
         load_from_dir(&config_dir, &mut map, false);
     }
 
-    #[cfg(debug_assertions)]
-    {
-        let default_dir = Path::new("docs/examples/default/debuggers");
-        load_from_dir(default_dir, &mut map, true);
-    }
+    let default_dir = Path::new("docs/examples/default/debuggers");
+    load_from_dir(default_dir, &mut map, true);
 
     map.into_values().collect()
 }

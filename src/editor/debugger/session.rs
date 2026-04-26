@@ -1,8 +1,11 @@
 use super::{AdapterConfig, DapEnvelope, DapMessage, decode_envelope, encode_envelope};
 use std::io::{self, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
+use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub enum DapEvent {
@@ -14,30 +17,92 @@ pub enum DapEvent {
 #[allow(dead_code)]
 pub struct DapSession {
     child: Child,
-    stdin: ChildStdin,
+    writer: DapWriter,
     rx: Receiver<DapEvent>,
     next_seq: u64,
 }
 
+enum DapWriter {
+    Stdio(ChildStdin),
+    Tcp(TcpStream),
+}
+
 #[allow(dead_code)]
 impl DapSession {
-    pub fn start(adapter: &AdapterConfig) -> io::Result<Self> {
-        let mut command = Command::new(&adapter.command);
-        command
-            .args(&adapter.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let mut child = command.spawn()?;
-        let stdin = child.stdin.take().ok_or_else(|| io::Error::other("stdin missing"))?;
-        let mut stdout = child.stdout.take().ok_or_else(|| io::Error::other("stdout missing"))?;
+    pub fn start(adapter: &AdapterConfig, working_dir: Option<&Path>) -> io::Result<Self> {
+        let (child, writer, mut reader): (Child, DapWriter, Box<dyn Read + Send>) =
+            if adapter.dap_adapter_type.eq_ignore_ascii_case("dlv-dap") {
+                // Delve DAP is TCP-based. Use --client-addr so the server dials us.
+                let listener = TcpListener::bind("127.0.0.1:0")?;
+                let addr = listener.local_addr()?;
+                listener.set_nonblocking(true)?;
+
+                let mut command = Command::new(&adapter.command);
+                command
+                    .args(&adapter.args)
+                    .arg("--client-addr")
+                    .arg(addr.to_string())
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                if let Some(dir) = working_dir {
+                    command.current_dir(dir);
+                }
+                let child = command.spawn()?;
+
+                let deadline = Instant::now() + Duration::from_secs(3);
+                let stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _peer)) => break stream,
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            if Instant::now() >= deadline {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::TimedOut,
+                                    "timed out waiting for dlv dap connection",
+                                ));
+                            }
+                            thread::sleep(Duration::from_millis(20));
+                        }
+                        Err(e) => return Err(e),
+                    }
+                };
+                // After accept, switch to blocking mode for normal framed reads.
+                stream.set_nonblocking(false)?;
+                let reader_stream = stream.try_clone()?;
+                (
+                    child,
+                    DapWriter::Tcp(stream),
+                    Box::new(reader_stream) as Box<dyn Read + Send>,
+                )
+            } else {
+                let mut command = Command::new(&adapter.command);
+                command
+                    .args(&adapter.args)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null());
+                if let Some(dir) = working_dir {
+                    command.current_dir(dir);
+                }
+                let mut child = command.spawn()?;
+                let stdin = child.stdin.take().ok_or_else(|| io::Error::other("stdin missing"))?;
+                let stdout = child
+                    .stdout
+                    .take()
+                    .ok_or_else(|| io::Error::other("stdout missing"))?;
+                (
+                    child,
+                    DapWriter::Stdio(stdin),
+                    Box::new(stdout) as Box<dyn Read + Send>,
+                )
+            };
 
         let (tx, rx) = mpsc::channel::<DapEvent>();
         thread::spawn(move || {
             let mut buf: Vec<u8> = Vec::new();
             let mut tmp = [0u8; 4096];
             loop {
-                match stdout.read(&mut tmp) {
+                match reader.read(&mut tmp) {
                     Ok(0) => {
                         let _ = tx.send(DapEvent::Closed);
                         break;
@@ -68,7 +133,7 @@ impl DapSession {
 
         Ok(Self {
             child,
-            stdin,
+            writer,
             rx,
             next_seq: 1,
         })
@@ -76,8 +141,16 @@ impl DapSession {
 
     pub fn send(&mut self, msg: &DapMessage) -> io::Result<()> {
         let bytes = encode_envelope(msg).map_err(|e| io::Error::other(e.to_string()))?;
-        self.stdin.write_all(&bytes)?;
-        self.stdin.flush()
+        match &mut self.writer {
+            DapWriter::Stdio(stdin) => {
+                stdin.write_all(&bytes)?;
+                stdin.flush()
+            }
+            DapWriter::Tcp(stream) => {
+                stream.write_all(&bytes)?;
+                stream.flush()
+            }
+        }
     }
 
     pub fn send_request(
