@@ -1231,17 +1231,15 @@ impl Editor {
             .ok_or_else(|| "Open a file before starting debug.".to_string())?;
         let workspace = self.sidebar.workspace_root().to_path_buf();
 
-        if adapter.dap_adapter_type.eq_ignore_ascii_case("debugpy") {
-            return Ok(json!({
+        let mut args = if adapter.dap_adapter_type.eq_ignore_ascii_case("debugpy") {
+            json!({
                 "name": "Debug current file",
                 "type": "python",
                 "request": "launch",
                 "program": file_path,
                 "cwd": workspace
-            }));
-        }
-
-        if adapter.dap_adapter_type.eq_ignore_ascii_case("codelldb") {
+            })
+        } else if adapter.dap_adapter_type.eq_ignore_ascii_case("codelldb") {
             let stem = file_path
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -1254,18 +1252,16 @@ impl Editor {
             } else {
                 workspace.join("target").join("debug").join(stem)
             };
-            return Ok(json!({
+            json!({
                 "name": "Debug current binary",
                 "type": "lldb",
                 "request": "launch",
                 "program": exe,
                 "cwd": workspace
-            }));
-        }
-
-        if adapter.dap_adapter_type.eq_ignore_ascii_case("dlv-dap") {
+            })
+        } else if adapter.dap_adapter_type.eq_ignore_ascii_case("dlv-dap") {
             let launch_dir = Self::resolve_go_launch_dir(&file_path, &workspace);
-            let mut args = json!({
+            json!({
                 "name": "Debug current Go package",
                 "type": "go",
                 "request": "launch",
@@ -1274,17 +1270,17 @@ impl Editor {
                 "program": ".",
                 "cwd": launch_dir,
                 "stopOnEntry": true
-            });
-            let mut overrides = adapter.launch_overrides.clone();
-            Self::expand_launch_templates(&mut overrides);
-            Self::merge_launch_overrides(&mut args, &overrides);
-            return Ok(args);
-        }
-
-        Err(format!(
-            "Unsupported adapter type for launch: {}",
-            adapter.dap_adapter_type
-        ))
+            })
+        } else {
+            return Err(format!(
+                "Unsupported adapter type for launch: {}",
+                adapter.dap_adapter_type
+            ));
+        };
+        let mut overrides = adapter.launch_overrides.clone();
+        Self::expand_launch_templates(&mut overrides);
+        Self::merge_launch_overrides(&mut args, &overrides);
+        Ok(args)
     }
 
     fn ensure_adapter_ready(adapter: &AdapterConfig) -> Result<(), String> {

@@ -4,3 +4,4 @@ command = "codelldb"
 args = []
 file_extensions = ["rs"]
 dap_adapter_type = "codelldb"
+launch_overrides = { stopOnEntry = true }
