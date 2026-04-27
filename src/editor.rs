@@ -34,7 +34,7 @@ use self::command::{
     MoveDirection,
     System::{
         Continue, CreateFile, CreateFolder, Dismiss, FocusDebuggerSidebar, FocusSidebar,
-        FocusTerminal, FocusView, Quit, Replace, Resize, Save, Search, StartDebug, StepInto,
+        FocusTerminal, FocusView, Pause, Quit, Replace, Resize, Save, Search, StartDebug, StepInto,
         StepOut, StepOver, StopDebug, ToggleBreakpoint, ToggleSidebar, ToggleTerminal,
     },
 };
@@ -403,6 +403,7 @@ impl Editor {
             System(StepInto) => self.step_into(),
             System(StepOut) => self.step_out(),
             System(Continue) => self.continue_debug(),
+            System(Pause) => self.pause_debug(),
             System(Dismiss) => self.view.clear_selection(),
             System(Search) => self.set_prompt(PromptType::Search),
             System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
@@ -1426,6 +1427,20 @@ impl Editor {
         });
     }
 
+    fn pause_debug(&mut self) {
+        let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
+        self.with_debug_session(|session| {
+            let mut args = serde_json::Map::new();
+            if thread_id != 0 {
+                args.insert("threadId".to_string(), json!(thread_id));
+            }
+            session
+                .send_request("pause", Value::Object(args))
+                .map_err(|e| format!("Pause error: {e}"))?;
+            Ok(())
+        });
+    }
+
     fn step_over(&mut self) {
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
         self.with_debug_session(|session| {
@@ -1488,7 +1503,7 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue,
+                | StepOut | Continue | Pause,
             )
             | Move(_) => {}
         }
@@ -1500,7 +1515,7 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue,
+                | StepOut | Continue | Pause,
             )
             | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
@@ -1548,7 +1563,7 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue,
+                | StepOut | Continue | Pause,
             )
             | Move(_) => {}
         }
@@ -1577,7 +1592,7 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue,
+                | StepOut | Continue | Pause,
             )
             | Move(_) => {}
         }
@@ -1649,7 +1664,7 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue,
+                | StepOut | Continue | Pause,
             )
             | Move(_) => {}
         }

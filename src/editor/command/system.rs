@@ -27,6 +27,7 @@ pub enum System {
     StepInto,
     StepOut,
     Continue,
+    Pause,
 }
 
 impl TryFrom<KeyEvent> for System {
@@ -42,6 +43,7 @@ impl TryFrom<KeyEvent> for System {
                 F(9) => Ok(Self::ToggleBreakpoint),
                 F(10) => Ok(Self::StepOver),
                 F(11) => Ok(Self::StepInto),
+                F(6) => Ok(Self::Pause),
                 Esc => Ok(Self::Dismiss),
                 _ => Err(format!("Unsupported key code {code:?} with no modifiers")),
             }
