@@ -100,6 +100,7 @@ pub struct Editor {
     verified_breakpoint_count: usize,
     pending_continue_after_entry: bool,
     pending_launch_arguments: Option<Value>,
+    debug_paused: bool,
 }
 
 impl Editor {
@@ -167,6 +168,7 @@ impl Editor {
             verified_breakpoint_count: 0,
             pending_continue_after_entry: false,
             pending_launch_arguments: None,
+            debug_paused: false,
         };
 
         let size = Terminal::size().unwrap_or_default();
@@ -212,7 +214,12 @@ impl Editor {
             }
             let _ = self.terminal_pane.poll();
             self.poll_debug_events();
-            let status = self.view.get_status();
+            let mut status = self.view.get_status();
+            status.debug_state_label = if self.debug_state.active {
+                Some(if self.debug_paused { "PAUSED" } else { "RUNNING" }.to_string())
+            } else {
+                None
+            };
             self.status_bar.update_status(status);
         }
     }
@@ -607,6 +614,7 @@ impl Editor {
                 self.debug_session = Some(session);
                 self.active_debug_adapter = Some(adapter.clone());
                 self.debug_state.active = true;
+                self.debug_paused = false;
                 self.pending_launch_arguments = Some(launch_args);
                 self.debug_panel.update(&self.debug_state);
                 self.update_message(&format!(
@@ -627,6 +635,7 @@ impl Editor {
         self.debug_session = None;
         self.active_debug_adapter = None;
         self.debug_state.active = false;
+        self.debug_paused = false;
         self.pending_configuration_done = false;
         self.debug_state.current_thread_id = None;
         self.debug_state.threads.clear();
@@ -649,6 +658,7 @@ impl Editor {
         self.debug_session = None;
         self.active_debug_adapter = None;
         self.debug_state.active = false;
+        self.debug_paused = false;
         self.pending_configuration_done = false;
         self.debug_state.current_thread_id = None;
         self.debug_state.threads.clear();
@@ -701,6 +711,7 @@ impl Editor {
                             // is not directly usable for stackTrace.
                             self.debug_state.current_thread_id =
                                 body.get("threadId").and_then(Self::dap_json_as_i64);
+                            self.debug_paused = true;
                             self.debug_stack_after_threads = true;
                             self.stacktrace_retry_attempted = false;
                             self.request_threads();
@@ -1418,6 +1429,7 @@ impl Editor {
     }
 
     fn continue_debug(&mut self) {
+        self.debug_paused = false;
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
         self.with_debug_session(|session| {
             session
@@ -1442,6 +1454,7 @@ impl Editor {
     }
 
     fn step_over(&mut self) {
+        self.debug_paused = false;
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
         self.with_debug_session(|session| {
             session
@@ -1452,6 +1465,7 @@ impl Editor {
     }
 
     fn step_into(&mut self) {
+        self.debug_paused = false;
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
         self.with_debug_session(|session| {
             session
@@ -1462,6 +1476,7 @@ impl Editor {
     }
 
     fn step_out(&mut self) {
+        self.debug_paused = false;
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
         self.with_debug_session(|session| {
             session
@@ -1814,7 +1829,12 @@ impl Editor {
     }
 
     pub fn refresh_status(&mut self) {
-        let status = self.view.get_status();
+        let mut status = self.view.get_status();
+        status.debug_state_label = if self.debug_state.active {
+            Some(if self.debug_paused { "PAUSED" } else { "RUNNING" }.to_string())
+        } else {
+            None
+        };
         let title = format!("{} - {NAME}", status.file_name);
         self.status_bar.update_status(status);
 

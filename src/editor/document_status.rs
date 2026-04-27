@@ -5,6 +5,7 @@ pub struct DocumentStatus {
     pub is_modified: bool,
     pub file_name: String,
     pub language_name: Option<String>,
+    pub debug_state_label: Option<String>,
 }
 
 impl PartialEq for DocumentStatus {
@@ -14,6 +15,7 @@ impl PartialEq for DocumentStatus {
             && self.is_modified == other.is_modified
             && self.file_name == other.file_name
             && self.language_name == other.language_name
+            && self.debug_state_label == other.debug_state_label
     }
 }
 

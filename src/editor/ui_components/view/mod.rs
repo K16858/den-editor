@@ -116,6 +116,7 @@ impl View {
             file_name: format!("{}", self.buffer.file_info),
             is_modified: self.buffer.modified,
             language_name,
+            debug_state_label: None,
         }
     }
 
