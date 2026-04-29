@@ -1,0 +1,25 @@
+# Default Markdown Language Configuration
+
+extensions = ["md", "markdown"]
+
+keywords = []
+primitive_types = []
+
+line_comment_start = "<!--"
+block_comment_start = "<!--"
+block_comment_end = "-->"
+
+[[brackets]]
+open = "("
+close = ")"
+color_offset = 0
+
+[[brackets]]
+open = "["
+close = "]"
+color_offset = 1
+
+[[brackets]]
+open = "{"
+close = "}"
+color_offset = 2
