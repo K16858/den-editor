@@ -644,12 +644,15 @@ impl Editor {
         }
     }
 
-    fn stop_debug(&mut self) {
+    fn clear_debug_session_process(&mut self) {
         if let Some(session) = &mut self.debug_session {
             session.stop();
         }
         self.debug_session = None;
         self.active_debug_adapter = None;
+    }
+
+    fn reset_debug_editor_state_after_stop(&mut self) {
         self.debug_state.active = false;
         self.debug_paused = false;
         self.pending_configuration_done = false;
@@ -670,35 +673,17 @@ impl Editor {
         self.pending_continue_after_entry = false;
         self.pending_launch_arguments = None;
         self.debug_panel.update(&self.debug_state);
+    }
+
+    fn stop_debug(&mut self) {
+        self.clear_debug_session_process();
+        self.reset_debug_editor_state_after_stop();
         self.update_message("Debug stopped.");
     }
 
     fn stop_debug_with_message(&mut self, message: &str) {
-        if let Some(session) = &mut self.debug_session {
-            session.stop();
-        }
-        self.debug_session = None;
-        self.active_debug_adapter = None;
-        self.debug_state.active = false;
-        self.debug_paused = false;
-        self.pending_configuration_done = false;
-        self.debug_state.current_thread_id = None;
-        self.debug_state.threads.clear();
-        self.debug_state.selected_thread_idx = 0;
-        self.debug_state.stack_frames.clear();
-        self.debug_state.selected_frame_idx = 0;
-        self.debug_state.variables.clear();
-        self.debug_state.selected_variable_idx = 0;
-        self.debug_state.variable_path.clear();
-        self.current_variables_reference = None;
-        self.variables_reference_stack.clear();
-        self.view.set_debug_stop_line(None);
-        self.debug_stack_after_threads = false;
-        self.stacktrace_retry_attempted = false;
-        self.verified_breakpoint_count = 0;
-        self.pending_continue_after_entry = false;
-        self.pending_launch_arguments = None;
-        self.debug_panel.update(&self.debug_state);
+        self.clear_debug_session_process();
+        self.reset_debug_editor_state_after_stop();
         self.update_message(message);
     }
 
@@ -744,6 +729,9 @@ impl Editor {
                             self.stacktrace_retry_attempted = false;
                             self.request_threads();
                             self.update_message("Debug paused.");
+                        } else if event == "continued" {
+                            self.debug_paused = false;
+                            self.view.set_debug_stop_line(None);
                         } else if event == "terminated" || event == "exited" {
                             // Adapter notified debuggee exit; stop session cleanly.
                             let code = body
@@ -1477,6 +1465,7 @@ impl Editor {
 
     fn continue_debug(&mut self) {
         self.debug_paused = false;
+        self.view.set_debug_stop_line(None);
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
         self.with_debug_session(|session| {
             session
@@ -1502,6 +1491,7 @@ impl Editor {
 
     fn restart_debug(&mut self) {
         self.debug_paused = false;
+        self.view.set_debug_stop_line(None);
         self.with_debug_session(|session| {
             session
                 .send_request("restart", json!({}))
@@ -1624,6 +1614,7 @@ impl Editor {
 
     fn step_over(&mut self) {
         self.debug_paused = false;
+        self.view.set_debug_stop_line(None);
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
         self.with_debug_session(|session| {
             session
@@ -1635,6 +1626,7 @@ impl Editor {
 
     fn step_into(&mut self) {
         self.debug_paused = false;
+        self.view.set_debug_stop_line(None);
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
         self.with_debug_session(|session| {
             session
@@ -1646,6 +1638,7 @@ impl Editor {
 
     fn step_out(&mut self) {
         self.debug_paused = false;
+        self.view.set_debug_stop_line(None);
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
         self.with_debug_session(|session| {
             session
