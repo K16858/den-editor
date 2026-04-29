@@ -38,14 +38,17 @@ impl DebugPanel {
                     .current_thread_id
                     .map_or_else(|| "-".to_string(), |id| id.to_string())
             ));
-            lines.push("Frame".to_string());
-            if let Some(frame) = state.stack_frames.first() {
-                lines.push(format!(
-                    "  {} ({}:{}:{})",
-                    frame.name, frame.source_path, frame.line, frame.column
-                ));
-            } else {
+            lines.push("Frames".to_string());
+            if state.stack_frames.is_empty() {
                 lines.push("  -".to_string());
+            } else {
+                let frame_rows = self.rows.saturating_sub(6).max(1);
+                for (idx, frame) in state.stack_frames.iter().take(frame_rows).enumerate() {
+                    lines.push(format!(
+                        "  #{idx} {} ({}:{}:{})",
+                        frame.name, frame.source_path, frame.line, frame.column
+                    ));
+                }
             }
             lines.push("Variables".to_string());
             if state.variables.is_empty() {
