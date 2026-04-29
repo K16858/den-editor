@@ -48,7 +48,7 @@ impl DapSession {
                 if let Some(dir) = working_dir {
                     command.current_dir(dir);
                 }
-                let child = command.spawn()?;
+                let mut child = command.spawn()?;
 
                 let deadline = Instant::now() + Duration::from_secs(3);
                 let stream = loop {
@@ -56,6 +56,7 @@ impl DapSession {
                         Ok((stream, _peer)) => break stream,
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                             if Instant::now() >= deadline {
+                                let _ = child.kill();
                                 return Err(io::Error::new(
                                     io::ErrorKind::TimedOut,
                                     "timed out waiting for dlv dap connection",
@@ -63,7 +64,10 @@ impl DapSession {
                             }
                             thread::sleep(Duration::from_millis(20));
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            let _ = child.kill();
+                            return Err(e);
+                        }
                     }
                 };
                 // After accept, switch to blocking mode for normal framed reads.
@@ -101,7 +105,7 @@ impl DapSession {
         thread::spawn(move || {
             let mut buf: Vec<u8> = Vec::new();
             let mut tmp = [0u8; 4096];
-            loop {
+            'read: loop {
                 match reader.read(&mut tmp) {
                     Ok(0) => {
                         let _ = tx.send(DapEvent::Closed);
@@ -118,7 +122,8 @@ impl DapSession {
                                 Ok(None) => break,
                                 Err(e) => {
                                     let _ = tx.send(DapEvent::Error(e.to_string()));
-                                    break;
+                                    buf.clear();
+                                    break 'read;
                                 }
                             }
                         }
