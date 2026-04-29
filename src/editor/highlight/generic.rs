@@ -25,6 +25,10 @@ impl GenericHighlighter {
                 block_comment_start: "/*".to_string(),
                 block_comment_end: "*/".to_string(),
                 brackets: vec![],
+                line_prefix_keyword_markers: vec![],
+                line_prefix_comment_markers: vec![],
+                full_line_comment_prefixes: vec![],
+                highlight_capitalized_type_names: true,
             };
             merge_config(&default, Some(&lang_config))
         } else {
@@ -40,6 +44,10 @@ impl GenericHighlighter {
                         block_comment_start: "/*".to_string(),
                         block_comment_end: "*/".to_string(),
                         brackets: vec![],
+                        line_prefix_keyword_markers: vec![],
+                        line_prefix_comment_markers: vec![],
+                        full_line_comment_prefixes: vec![],
+                        highlight_capitalized_type_names: true,
                     };
                     merge_config(&default, Some(&lang_config))
                 } else {
@@ -284,6 +292,43 @@ impl Highlighter for GenericHighlighter {
         mut state: HighlightState,
     ) -> (Vec<HighlightAnnotation>, HighlightState) {
         let mut annotations = Vec::new();
+        let trimmed = line.trim_start();
+        let indent = line.len().saturating_sub(trimmed.len());
+
+        for prefix in &self.config.full_line_comment_prefixes {
+            if !prefix.is_empty() && trimmed.starts_with(prefix) {
+                annotations.push(HighlightAnnotation {
+                    start: indent,
+                    end: line.len(),
+                    annotation_type: AnnotationType::Comment,
+                });
+                return (annotations, state);
+            }
+        }
+
+        for prefix in &self.config.line_prefix_keyword_markers {
+            if !prefix.is_empty() && trimmed.starts_with(prefix) {
+                let end = indent + prefix.len();
+                annotations.push(HighlightAnnotation {
+                    start: indent,
+                    end: end.min(line.len()),
+                    annotation_type: AnnotationType::Keyword,
+                });
+                break;
+            }
+        }
+
+        for prefix in &self.config.line_prefix_comment_markers {
+            if !prefix.is_empty() && trimmed.starts_with(prefix) {
+                let end = indent + prefix.len();
+                annotations.push(HighlightAnnotation {
+                    start: indent,
+                    end: end.min(line.len()),
+                    annotation_type: AnnotationType::Comment,
+                });
+                break;
+            }
+        }
 
         let (string_ranges, continuation_start) = find_string_ranges(line, &mut state);
         for range in &string_ranges {
@@ -458,58 +503,60 @@ impl Highlighter for GenericHighlighter {
             }
         }
 
-        let mut chars = line.char_indices().peekable();
-        let mut prev_char: Option<char> = None;
+        if self.config.highlight_capitalized_type_names {
+            let mut chars = line.char_indices().peekable();
+            let mut prev_char: Option<char> = None;
 
-        while let Some((byte_idx, ch)) = chars.next() {
-            if is_in_string(byte_idx) || is_in_comment(byte_idx) {
-                prev_char = Some(ch);
-                continue;
-            }
-
-            if ch.is_uppercase() {
-                // Only consider this a type name start if the previous character is a word boundary
-                if let Some(prev) = prev_char
-                    && !is_word_boundary(prev)
-                {
+            while let Some((byte_idx, ch)) = chars.next() {
+                if is_in_string(byte_idx) || is_in_comment(byte_idx) {
                     prev_char = Some(ch);
                     continue;
                 }
 
-                let start = byte_idx;
-                let mut end = start + ch.len_utf8();
-
-                while let Some(&(next_byte_idx, next_ch)) = chars.peek() {
-                    if next_ch.is_alphanumeric() || next_ch == '_' {
-                        chars.next();
-                        end = next_byte_idx + next_ch.len_utf8();
-                    } else {
-                        break;
-                    }
-                }
-
-                let mut next_char: Option<char> = None;
-                if let Some(&(_, ch_after)) = chars.peek() {
-                    next_char = Some(ch_after);
-                }
-
-                let after_ok = next_char.is_none_or(is_word_boundary);
-
-                if after_ok {
-                    let word = &line[start..end];
-                    if !self.config.keywords.iter().any(|kw| kw == word)
-                        && !self.config.primitive_types.iter().any(|pt| pt == word)
+                if ch.is_uppercase() {
+                    // Only consider this a type name start if the previous character is a word boundary
+                    if let Some(prev) = prev_char
+                        && !is_word_boundary(prev)
                     {
-                        annotations.push(HighlightAnnotation {
-                            start,
-                            end,
-                            annotation_type: AnnotationType::Type,
-                        });
+                        prev_char = Some(ch);
+                        continue;
+                    }
+
+                    let start = byte_idx;
+                    let mut end = start + ch.len_utf8();
+
+                    while let Some(&(next_byte_idx, next_ch)) = chars.peek() {
+                        if next_ch.is_alphanumeric() || next_ch == '_' {
+                            chars.next();
+                            end = next_byte_idx + next_ch.len_utf8();
+                        } else {
+                            break;
+                        }
+                    }
+
+                    let mut next_char: Option<char> = None;
+                    if let Some(&(_, ch_after)) = chars.peek() {
+                        next_char = Some(ch_after);
+                    }
+
+                    let after_ok = next_char.is_none_or(is_word_boundary);
+
+                    if after_ok {
+                        let word = &line[start..end];
+                        if !self.config.keywords.iter().any(|kw| kw == word)
+                            && !self.config.primitive_types.iter().any(|pt| pt == word)
+                        {
+                            annotations.push(HighlightAnnotation {
+                                start,
+                                end,
+                                annotation_type: AnnotationType::Type,
+                            });
+                        }
                     }
                 }
-            }
 
-            prev_char = Some(ch);
+                prev_char = Some(ch);
+            }
         }
 
         // Brackets — use char_indices() for byte offsets

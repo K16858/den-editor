@@ -45,6 +45,7 @@ if ($currentPath -notlike "*$InstallDir*") {
 # ── Install config files ─────────────────────────────────────────────────────
 
 New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir "languages") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir "debuggers") | Out-Null
 
 function Copy-IfMissing {
     param([string]$Src, [string]$Dst)
@@ -58,6 +59,10 @@ Copy-IfMissing (Join-Path $DefaultCfg "colors.toml") (Join-Path $ConfigDir "colo
 
 Get-ChildItem (Join-Path $DefaultCfg "languages\*.toml") | ForEach-Object {
     Copy-IfMissing $_.FullName (Join-Path $ConfigDir "languages\$($_.Name)")
+}
+
+Get-ChildItem (Join-Path $DefaultCfg "debuggers\*.toml") | ForEach-Object {
+    Copy-IfMissing $_.FullName (Join-Path $ConfigDir "debuggers\$($_.Name)")
 }
 
 # ── Done ─────────────────────────────────────────────────────────────────────

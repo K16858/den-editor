@@ -28,6 +28,10 @@ pub struct LanguageConfigFile {
     pub block_comment_end: Option<String>,
     pub brackets: Option<Vec<BracketConfigFile>>,
     pub extensions: Option<Vec<String>>,
+    pub line_prefix_keyword_markers: Option<Vec<String>>,
+    pub line_prefix_comment_markers: Option<Vec<String>>,
+    pub full_line_comment_prefixes: Option<Vec<String>>,
+    pub highlight_capitalized_type_names: Option<bool>,
 }
 
 #[derive(Deserialize)]

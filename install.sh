@@ -51,7 +51,7 @@ fi
 
 # ── Install config files ─────────────────────────────────────────────────────
 
-mkdir -p "$CONFIG_DIR/languages"
+mkdir -p "$CONFIG_DIR/languages" "$CONFIG_DIR/debuggers"
 
 copy_if_missing() {
     local src="$1"
@@ -67,6 +67,11 @@ copy_if_missing "$DEFAULT_CONFIG_DIR/colors.toml" "$CONFIG_DIR/colors.toml"
 for lang_file in "$DEFAULT_CONFIG_DIR/languages/"*.toml; do
     [[ -f "$lang_file" ]] || continue
     copy_if_missing "$lang_file" "$CONFIG_DIR/languages/$(basename "$lang_file")"
+done
+
+for debugger_file in "$DEFAULT_CONFIG_DIR/debuggers/"*.toml; do
+    [[ -f "$debugger_file" ]] || continue
+    copy_if_missing "$debugger_file" "$CONFIG_DIR/debuggers/$(basename "$debugger_file")"
 done
 
 # ── Done ─────────────────────────────────────────────────────────────────────
