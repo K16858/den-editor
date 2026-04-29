@@ -14,6 +14,7 @@ use crossterm::terminal::{
 };
 use crossterm::{Command, queue};
 use std::io::{Error, Write, stdout};
+use unicode_width::UnicodeWidthStr;
 
 pub struct Terminal {}
 
@@ -92,6 +93,7 @@ impl Terminal {
     pub fn print_annotated_row_with_gutter(
         row: usize,
         col_start: usize,
+        row_display_width: usize,
         marker: &str,
         line_number_prefix: &str,
         marker_is_breakpoint: bool,
@@ -100,9 +102,14 @@ impl Terminal {
         highlight_prefix: bool,
     ) -> Result<(), Error> {
         Self::move_caret_to(Position { row, col: col_start })?;
-        Self::queue_command(Clear(ClearType::UntilNewLine))?;
 
         let row_bg = marker_is_stopped.then_some(Color::DarkBlue);
+        // Apply background before clear so the cleared tail keeps the row highlight where supported;
+        // re-apply after clear because some terminals reset attributes on clear.
+        if let Some(bg) = row_bg {
+            Self::queue_command(SetBackgroundColor(bg))?;
+        }
+        Self::queue_command(Clear(ClearType::UntilNewLine))?;
         if let Some(bg) = row_bg {
             Self::queue_command(SetBackgroundColor(bg))?;
         }
@@ -159,6 +166,23 @@ impl Terminal {
                 }
                 Ok(())
             })?;
+
+        if marker_is_stopped {
+            if let Some(bg) = row_bg {
+                let gutter_w = marker.width() + line_number_prefix.width();
+                let content_w: usize = annotated_string
+                    .into_iter()
+                    .map(|p| p.string.width())
+                    .sum();
+                let used = gutter_w.saturating_add(content_w);
+                let pad = row_display_width.saturating_sub(used);
+                if pad > 0 {
+                    Self::queue_command(SetBackgroundColor(bg))?;
+                    Self::print(&" ".repeat(pad))?;
+                }
+            }
+        }
+
         Self::reset_color()?;
         Ok(())
     }

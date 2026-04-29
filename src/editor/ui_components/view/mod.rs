@@ -240,6 +240,7 @@ impl View {
                         Terminal::print_annotated_row_with_gutter(
                             draw_row,
                             self.col_offset,
+                            width,
                             &marker,
                             &line_number_prefix,
                             marker_is_breakpoint,
@@ -267,6 +268,7 @@ impl View {
                         Terminal::print_annotated_row_with_gutter(
                             draw_row,
                             self.col_offset,
+                            width,
                             &marker,
                             &line_number_prefix,
                             marker_is_breakpoint,
@@ -289,6 +291,7 @@ impl View {
                         Terminal::print_annotated_row_with_gutter(
                             draw_row,
                             self.col_offset,
+                            width,
                             &marker,
                             &line_number_prefix,
                             marker_is_breakpoint,
@@ -317,6 +320,7 @@ impl View {
                     Terminal::print_annotated_row_with_gutter(
                         draw_row,
                         self.col_offset,
+                        width,
                         &marker,
                         &line_number_prefix,
                         marker_is_breakpoint,
@@ -339,6 +343,7 @@ impl View {
                     Terminal::print_annotated_row_with_gutter(
                         draw_row,
                         self.col_offset,
+                        width,
                         &marker,
                         &line_number_prefix,
                         marker_is_breakpoint,
