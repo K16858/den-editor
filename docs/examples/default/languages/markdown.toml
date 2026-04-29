@@ -8,6 +8,9 @@ primitive_types = []
 line_comment_start = "<!--"
 block_comment_start = "<!--"
 block_comment_end = "-->"
+line_prefix_keyword_markers = ["# ", "## ", "### ", "#### ", "##### ", "###### ", "- ", "* ", "+ "]
+line_prefix_comment_markers = ["> "]
+full_line_comment_prefixes = []
 
 [[brackets]]
 open = "("

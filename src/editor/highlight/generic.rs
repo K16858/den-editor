@@ -25,6 +25,9 @@ impl GenericHighlighter {
                 block_comment_start: "/*".to_string(),
                 block_comment_end: "*/".to_string(),
                 brackets: vec![],
+                line_prefix_keyword_markers: vec![],
+                line_prefix_comment_markers: vec![],
+                full_line_comment_prefixes: vec![],
             };
             merge_config(&default, Some(&lang_config))
         } else {
@@ -40,6 +43,9 @@ impl GenericHighlighter {
                         block_comment_start: "/*".to_string(),
                         block_comment_end: "*/".to_string(),
                         brackets: vec![],
+                        line_prefix_keyword_markers: vec![],
+                        line_prefix_comment_markers: vec![],
+                        full_line_comment_prefixes: vec![],
                     };
                     merge_config(&default, Some(&lang_config))
                 } else {
@@ -284,6 +290,43 @@ impl Highlighter for GenericHighlighter {
         mut state: HighlightState,
     ) -> (Vec<HighlightAnnotation>, HighlightState) {
         let mut annotations = Vec::new();
+        let trimmed = line.trim_start();
+        let indent = line.len().saturating_sub(trimmed.len());
+
+        for prefix in &self.config.full_line_comment_prefixes {
+            if !prefix.is_empty() && trimmed.starts_with(prefix) {
+                annotations.push(HighlightAnnotation {
+                    start: indent,
+                    end: line.len(),
+                    annotation_type: AnnotationType::Comment,
+                });
+                return (annotations, state);
+            }
+        }
+
+        for prefix in &self.config.line_prefix_keyword_markers {
+            if !prefix.is_empty() && trimmed.starts_with(prefix) {
+                let end = indent + prefix.len();
+                annotations.push(HighlightAnnotation {
+                    start: indent,
+                    end: end.min(line.len()),
+                    annotation_type: AnnotationType::Keyword,
+                });
+                break;
+            }
+        }
+
+        for prefix in &self.config.line_prefix_comment_markers {
+            if !prefix.is_empty() && trimmed.starts_with(prefix) {
+                let end = indent + prefix.len();
+                annotations.push(HighlightAnnotation {
+                    start: indent,
+                    end: end.min(line.len()),
+                    annotation_type: AnnotationType::Comment,
+                });
+                break;
+            }
+        }
 
         let (string_ranges, continuation_start) = find_string_ranges(line, &mut state);
         for range in &string_ranges {

@@ -13,6 +13,9 @@ pub struct LanguageConfig {
     pub block_comment_start: String,
     pub block_comment_end: String,
     pub brackets: Vec<BracketConfig>,
+    pub line_prefix_keyword_markers: Vec<String>,
+    pub line_prefix_comment_markers: Vec<String>,
+    pub full_line_comment_prefixes: Vec<String>,
 }
 
 pub fn default_rust_config() -> LanguageConfig {
@@ -78,6 +81,9 @@ fn hardcoded_rust_config() -> LanguageConfig {
                 color_offset: 2,
             },
         ],
+        line_prefix_keyword_markers: vec![],
+        line_prefix_comment_markers: vec![],
+        full_line_comment_prefixes: vec![],
     }
 }
 
@@ -116,6 +122,18 @@ pub fn merge_config(
             .clone()
             .unwrap_or_else(|| default.block_comment_end.clone()),
         brackets: merge_brackets(&default.brackets, file_config.brackets.as_ref()),
+        line_prefix_keyword_markers: file_config
+            .line_prefix_keyword_markers
+            .clone()
+            .unwrap_or_else(|| default.line_prefix_keyword_markers.clone()),
+        line_prefix_comment_markers: file_config
+            .line_prefix_comment_markers
+            .clone()
+            .unwrap_or_else(|| default.line_prefix_comment_markers.clone()),
+        full_line_comment_prefixes: file_config
+            .full_line_comment_prefixes
+            .clone()
+            .unwrap_or_else(|| default.full_line_comment_prefixes.clone()),
     }
 }
 
