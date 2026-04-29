@@ -16,6 +16,7 @@ pub struct LanguageConfig {
     pub line_prefix_keyword_markers: Vec<String>,
     pub line_prefix_comment_markers: Vec<String>,
     pub full_line_comment_prefixes: Vec<String>,
+    pub highlight_capitalized_type_names: bool,
 }
 
 pub fn default_rust_config() -> LanguageConfig {
@@ -84,6 +85,7 @@ fn hardcoded_rust_config() -> LanguageConfig {
         line_prefix_keyword_markers: vec![],
         line_prefix_comment_markers: vec![],
         full_line_comment_prefixes: vec![],
+        highlight_capitalized_type_names: true,
     }
 }
 
@@ -134,6 +136,9 @@ pub fn merge_config(
             .full_line_comment_prefixes
             .clone()
             .unwrap_or_else(|| default.full_line_comment_prefixes.clone()),
+        highlight_capitalized_type_names: file_config
+            .highlight_capitalized_type_names
+            .unwrap_or(default.highlight_capitalized_type_names),
     }
 }
 
