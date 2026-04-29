@@ -33,9 +33,10 @@ use self::command::{
     Edit::InsertNewline,
     MoveDirection,
     System::{
-        Continue, CreateFile, CreateFolder, Dismiss, FocusDebuggerSidebar, FocusSidebar,
-        FocusTerminal, FocusView, Pause, Quit, Replace, Resize, Save, Search, StartDebug, StepInto,
-        StepOut, StepOver, StopDebug, ToggleBreakpoint, ToggleSidebar, ToggleTerminal,
+        Continue, CreateFile, CreateFolder, DisconnectDebug, Dismiss, FocusDebuggerSidebar,
+        FocusSidebar, FocusTerminal, FocusView, Pause, Quit, Replace, Resize, RestartDebug, Save,
+        Search, StartDebug, StepInto, StepOut, StepOver, StopDebug, ToggleBreakpoint,
+        ToggleSidebar, ToggleTerminal,
     },
 };
 
@@ -411,6 +412,8 @@ impl Editor {
             System(StepOut) => self.step_out(),
             System(Continue) => self.continue_debug(),
             System(Pause) => self.pause_debug(),
+            System(RestartDebug) => self.restart_debug(),
+            System(DisconnectDebug) => self.disconnect_debug(),
             System(Dismiss) => self.view.clear_selection(),
             System(Search) => self.set_prompt(PromptType::Search),
             System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
@@ -1449,6 +1452,25 @@ impl Editor {
         });
     }
 
+    fn restart_debug(&mut self) {
+        self.debug_paused = false;
+        self.with_debug_session(|session| {
+            session
+                .send_request("restart", json!({}))
+                .map_err(|e| format!("Restart error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn disconnect_debug(&mut self) {
+        self.with_debug_session(|session| {
+            session
+                .send_request("disconnect", json!({ "terminateDebuggee": false }))
+                .map_err(|e| format!("Disconnect error: {e}"))?;
+            Ok(())
+        });
+    }
+
     fn step_over(&mut self) {
         self.debug_paused = false;
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
@@ -1514,7 +1536,7 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue | Pause,
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug,
             )
             | Move(_) => {}
         }
@@ -1526,7 +1548,7 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue | Pause,
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug,
             )
             | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
@@ -1574,7 +1596,7 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue | Pause,
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug,
             )
             | Move(_) => {}
         }
@@ -1603,7 +1625,7 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue | Pause,
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug,
             )
             | Move(_) => {}
         }
@@ -1675,7 +1697,7 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue | Pause,
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug,
             )
             | Move(_) => {}
         }

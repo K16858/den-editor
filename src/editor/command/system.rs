@@ -28,6 +28,8 @@ pub enum System {
     StepOut,
     Continue,
     Pause,
+    RestartDebug,
+    DisconnectDebug,
 }
 
 impl TryFrom<KeyEvent> for System {
@@ -51,6 +53,7 @@ impl TryFrom<KeyEvent> for System {
             match code {
                 F(5) => Ok(Self::StopDebug),
                 F(11) => Ok(Self::StepOut),
+                F(6) => Ok(Self::RestartDebug),
                 _ => Err(format!("Unsupported SHIFT+{code:?} combination")),
             }
         } else if modifiers == KeyModifiers::CONTROL | KeyModifiers::SHIFT {
@@ -58,6 +61,7 @@ impl TryFrom<KeyEvent> for System {
                 Char('e' | 'E') => Ok(Self::FocusSidebar),
                 Char('d' | 'D') => Ok(Self::FocusDebuggerSidebar),
                 Char('n' | 'N') => Ok(Self::CreateFolder),
+                Char('x' | 'X') => Ok(Self::DisconnectDebug),
                 _ => Err(format!("Unsupported CONTROL+SHIFT+{code:?} combination")),
             }
         } else if modifiers == KeyModifiers::CONTROL | KeyModifiers::ALT {
