@@ -30,6 +30,14 @@ pub enum System {
     Pause,
     RestartDebug,
     DisconnectDebug,
+    NextThread,
+    PrevThread,
+    NextFrame,
+    PrevFrame,
+    NextVariable,
+    PrevVariable,
+    ExpandVariable,
+    CollapseVariable,
 }
 
 impl TryFrom<KeyEvent> for System {
@@ -68,6 +76,14 @@ impl TryFrom<KeyEvent> for System {
             match code {
                 Char('e' | 'E') => Ok(Self::FocusSidebar),
                 Char('d' | 'D') => Ok(Self::FocusDebuggerSidebar),
+                Char('t' | 'T') => Ok(Self::NextThread),
+                Char('g' | 'G') => Ok(Self::PrevThread),
+                Char('j' | 'J') => Ok(Self::NextFrame),
+                Char('k' | 'K') => Ok(Self::PrevFrame),
+                Char('v' | 'V') => Ok(Self::NextVariable),
+                Char('b' | 'B') => Ok(Self::PrevVariable),
+                Char('l' | 'L') => Ok(Self::ExpandVariable),
+                Char('h' | 'H') => Ok(Self::CollapseVariable),
                 _ => Err(format!("Unsupported CONTROL+ALT+{code:?} combination")),
             }
         } else if modifiers == KeyModifiers::CONTROL {

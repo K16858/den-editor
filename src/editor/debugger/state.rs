@@ -26,6 +26,10 @@ pub struct DebugState {
     pub active: bool,
     pub current_thread_id: Option<i64>,
     pub threads: Vec<ThreadSummary>,
+    pub selected_thread_idx: usize,
     pub stack_frames: Vec<StackFrameSummary>,
+    pub selected_frame_idx: usize,
     pub variables: Vec<VariableSummary>,
+    pub selected_variable_idx: usize,
+    pub variable_path: Vec<String>,
 }

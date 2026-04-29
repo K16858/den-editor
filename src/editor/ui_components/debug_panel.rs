@@ -38,24 +38,48 @@ impl DebugPanel {
                     .current_thread_id
                     .map_or_else(|| "-".to_string(), |id| id.to_string())
             ));
+            lines.push("Threads".to_string());
+            if state.threads.is_empty() {
+                lines.push("  -".to_string());
+            } else {
+                for (idx, thread) in state.threads.iter().take(2).enumerate() {
+                    let marker = if idx == state.selected_thread_idx { ">" } else { " " };
+                    lines.push(format!(" {marker} {} ({})", thread.name, thread.id));
+                }
+            }
             lines.push("Frames".to_string());
             if state.stack_frames.is_empty() {
                 lines.push("  -".to_string());
             } else {
-                let frame_rows = self.rows.saturating_sub(6).max(1);
+                let frame_rows = self.rows.saturating_sub(9).max(1);
                 for (idx, frame) in state.stack_frames.iter().take(frame_rows).enumerate() {
+                    let marker = if idx == state.selected_frame_idx { ">" } else { " " };
                     lines.push(format!(
-                        "  #{idx} {} ({}:{}:{})",
-                        frame.name, frame.source_path, frame.line, frame.column
+                        " {marker}#{idx} {} ({}:{}:{})",
+                        frame.name, frame.source_path, frame.line, frame.column,
                     ));
                 }
             }
             lines.push("Variables".to_string());
+            if !state.variable_path.is_empty() {
+                lines.push(format!("  path: {}", state.variable_path.join(".")));
+            }
             if state.variables.is_empty() {
                 lines.push("  -".to_string());
             } else {
-                for var in state.variables.iter().take(self.rows.saturating_sub(6)) {
-                    lines.push(format!("  {} = {}", var.name, var.value));
+                for (idx, var) in state
+                    .variables
+                    .iter()
+                    .take(self.rows.saturating_sub(9))
+                    .enumerate()
+                {
+                    let marker = if idx == state.selected_variable_idx {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    let expandable = if var.variables_reference > 0 { " +" } else { "" };
+                    lines.push(format!(" {marker} {} = {}{expandable}", var.name, var.value));
                 }
             }
         } else {

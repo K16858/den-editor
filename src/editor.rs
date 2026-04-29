@@ -33,10 +33,11 @@ use self::command::{
     Edit::InsertNewline,
     MoveDirection,
     System::{
-        Continue, CreateFile, CreateFolder, DisconnectDebug, Dismiss, FocusDebuggerSidebar,
-        FocusSidebar, FocusTerminal, FocusView, Pause, Quit, Replace, Resize, RestartDebug, Save,
-        Search, StartDebug, StepInto, StepOut, StepOver, StopDebug, ToggleBreakpoint,
-        ToggleSidebar, ToggleTerminal,
+        CollapseVariable, Continue, CreateFile, CreateFolder, DisconnectDebug, Dismiss,
+        ExpandVariable, FocusDebuggerSidebar, FocusSidebar, FocusTerminal, FocusView, NextFrame,
+        NextThread, NextVariable, Pause, PrevFrame, PrevThread, PrevVariable, Quit, Replace,
+        Resize, RestartDebug, Save, Search, StartDebug, StepInto, StepOut, StepOver, StopDebug,
+        ToggleBreakpoint, ToggleSidebar, ToggleTerminal,
     },
 };
 
@@ -102,6 +103,8 @@ pub struct Editor {
     pending_continue_after_entry: bool,
     pending_launch_arguments: Option<Value>,
     debug_paused: bool,
+    current_variables_reference: Option<i64>,
+    variables_reference_stack: Vec<i64>,
 }
 
 impl Editor {
@@ -170,6 +173,8 @@ impl Editor {
             pending_continue_after_entry: false,
             pending_launch_arguments: None,
             debug_paused: false,
+            current_variables_reference: None,
+            variables_reference_stack: Vec::new(),
         };
 
         let size = Terminal::size().unwrap_or_default();
@@ -414,6 +419,14 @@ impl Editor {
             System(Pause) => self.pause_debug(),
             System(RestartDebug) => self.restart_debug(),
             System(DisconnectDebug) => self.disconnect_debug(),
+            System(NextThread) => self.select_next_thread(),
+            System(PrevThread) => self.select_prev_thread(),
+            System(NextFrame) => self.select_next_frame(),
+            System(PrevFrame) => self.select_prev_frame(),
+            System(NextVariable) => self.select_next_variable(),
+            System(PrevVariable) => self.select_prev_variable(),
+            System(ExpandVariable) => self.expand_selected_variable(),
+            System(CollapseVariable) => self.collapse_variable_scope(),
             System(Dismiss) => self.view.clear_selection(),
             System(Search) => self.set_prompt(PromptType::Search),
             System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
@@ -642,8 +655,14 @@ impl Editor {
         self.pending_configuration_done = false;
         self.debug_state.current_thread_id = None;
         self.debug_state.threads.clear();
+        self.debug_state.selected_thread_idx = 0;
         self.debug_state.stack_frames.clear();
+        self.debug_state.selected_frame_idx = 0;
         self.debug_state.variables.clear();
+        self.debug_state.selected_variable_idx = 0;
+        self.debug_state.variable_path.clear();
+        self.current_variables_reference = None;
+        self.variables_reference_stack.clear();
         self.view.set_debug_stop_line(None);
         self.debug_stack_after_threads = false;
         self.stacktrace_retry_attempted = false;
@@ -665,8 +684,14 @@ impl Editor {
         self.pending_configuration_done = false;
         self.debug_state.current_thread_id = None;
         self.debug_state.threads.clear();
+        self.debug_state.selected_thread_idx = 0;
         self.debug_state.stack_frames.clear();
+        self.debug_state.selected_frame_idx = 0;
         self.debug_state.variables.clear();
+        self.debug_state.selected_variable_idx = 0;
+        self.debug_state.variable_path.clear();
+        self.current_variables_reference = None;
+        self.variables_reference_stack.clear();
         self.view.set_debug_stop_line(None);
         self.debug_stack_after_threads = false;
         self.stacktrace_retry_attempted = false;
@@ -902,6 +927,18 @@ impl Editor {
                     })
                     .unwrap_or_default();
                 self.debug_state.threads = threads;
+                if self.debug_state.threads.is_empty() {
+                    self.debug_state.selected_thread_idx = 0;
+                } else if let Some(id) = self.debug_state.current_thread_id {
+                    self.debug_state.selected_thread_idx = self
+                        .debug_state
+                        .threads
+                        .iter()
+                        .position(|t| t.id == id)
+                        .unwrap_or(0);
+                } else {
+                    self.debug_state.selected_thread_idx = 0;
+                }
                 if self.debug_stack_after_threads {
                     self.debug_stack_after_threads = false;
                     // Prefer stopped thread id only if it exists in the current thread list.
@@ -969,6 +1006,7 @@ impl Editor {
                     })
                 });
                 self.debug_state.stack_frames = frames;
+                self.debug_state.selected_frame_idx = 0;
                 if is_current_file {
                     self.view.set_debug_stop_line(pause_line);
                 } else {
@@ -998,6 +1036,10 @@ impl Editor {
                     })
                     .unwrap_or(0);
                 if reference != 0 {
+                    self.current_variables_reference = Some(reference);
+                    self.variables_reference_stack.clear();
+                    self.debug_state.variable_path.clear();
+                    self.debug_state.selected_variable_idx = 0;
                     self.request_variables(reference);
                 }
             }
@@ -1034,6 +1076,12 @@ impl Editor {
                     })
                     .unwrap_or_default();
                 self.debug_state.variables = vars;
+                if self.debug_state.variables.is_empty() {
+                    self.debug_state.selected_variable_idx = 0;
+                } else if self.debug_state.selected_variable_idx >= self.debug_state.variables.len() {
+                    self.debug_state.selected_variable_idx =
+                        self.debug_state.variables.len().saturating_sub(1);
+                }
             }
             "setBreakpoints" => {
                 let (verified, total, first_reason) = body
@@ -1471,6 +1519,109 @@ impl Editor {
         });
     }
 
+    fn select_next_thread(&mut self) {
+        self.select_thread_with_offset(1);
+    }
+
+    fn select_prev_thread(&mut self) {
+        self.select_thread_with_offset(-1);
+    }
+
+    fn select_thread_with_offset(&mut self, delta: isize) {
+        let len = self.debug_state.threads.len();
+        if len == 0 {
+            return;
+        }
+        let current = self.debug_state.selected_thread_idx.min(len.saturating_sub(1)) as isize;
+        let next = (current + delta).rem_euclid(len as isize) as usize;
+        self.debug_state.selected_thread_idx = next;
+        if let Some(thread) = self.debug_state.threads.get(next) {
+            self.debug_state.current_thread_id = Some(thread.id);
+            self.request_stack_trace();
+        }
+    }
+
+    fn select_next_frame(&mut self) {
+        self.select_frame_with_offset(1);
+    }
+
+    fn select_prev_frame(&mut self) {
+        self.select_frame_with_offset(-1);
+    }
+
+    fn select_frame_with_offset(&mut self, delta: isize) {
+        let len = self.debug_state.stack_frames.len();
+        if len == 0 {
+            return;
+        }
+        let current = self.debug_state.selected_frame_idx.min(len.saturating_sub(1)) as isize;
+        let next = (current + delta).rem_euclid(len as isize) as usize;
+        self.debug_state.selected_frame_idx = next;
+        if let Some(frame) = self.debug_state.stack_frames.get(next).cloned() {
+            if frame.id != 0 {
+                self.request_scopes(frame.id);
+            }
+            if self.view.file_path().is_some_and(|path| Self::dap_source_path_string(&path) == frame.source_path) {
+                self.view.set_debug_stop_line(Some(frame.line));
+            } else {
+                self.view.set_debug_stop_line(None);
+            }
+            self.update_message(&format!("Selected frame #{next}: {}", frame.name));
+        }
+    }
+
+    fn select_next_variable(&mut self) {
+        self.select_variable_with_offset(1);
+    }
+
+    fn select_prev_variable(&mut self) {
+        self.select_variable_with_offset(-1);
+    }
+
+    fn select_variable_with_offset(&mut self, delta: isize) {
+        let len = self.debug_state.variables.len();
+        if len == 0 {
+            return;
+        }
+        let current = self
+            .debug_state
+            .selected_variable_idx
+            .min(len.saturating_sub(1)) as isize;
+        let next = (current + delta).rem_euclid(len as isize) as usize;
+        self.debug_state.selected_variable_idx = next;
+    }
+
+    fn expand_selected_variable(&mut self) {
+        let Some(var) = self
+            .debug_state
+            .variables
+            .get(self.debug_state.selected_variable_idx)
+            .cloned()
+        else {
+            return;
+        };
+        if var.variables_reference <= 0 {
+            return;
+        }
+        if let Some(current_ref) = self.current_variables_reference {
+            self.variables_reference_stack.push(current_ref);
+        }
+        self.current_variables_reference = Some(var.variables_reference);
+        self.debug_state.variable_path.push(var.name.clone());
+        self.debug_state.selected_variable_idx = 0;
+        self.request_variables(var.variables_reference);
+    }
+
+    fn collapse_variable_scope(&mut self) {
+        let Some(previous_ref) = self.variables_reference_stack.pop() else {
+            return;
+        };
+        self.current_variables_reference = Some(previous_ref);
+        self.debug_state.variable_path.pop();
+        self.debug_state.selected_variable_idx = 0;
+        self.request_variables(previous_ref);
+    }
+
     fn step_over(&mut self) {
         self.debug_paused = false;
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
@@ -1536,7 +1687,9 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug,
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
+                | ExpandVariable | CollapseVariable,
             )
             | Move(_) => {}
         }
@@ -1548,7 +1701,9 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug,
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
+                | ExpandVariable | CollapseVariable,
             )
             | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
@@ -1596,7 +1751,9 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug,
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
+                | ExpandVariable | CollapseVariable,
             )
             | Move(_) => {}
         }
@@ -1625,7 +1782,9 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug,
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
+                | ExpandVariable | CollapseVariable,
             )
             | Move(_) => {}
         }
@@ -1697,7 +1856,9 @@ impl Editor {
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
-                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug,
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
+                | ExpandVariable | CollapseVariable,
             )
             | Move(_) => {}
         }
