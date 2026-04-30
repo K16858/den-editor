@@ -8,7 +8,8 @@ use super::super::{
 use super::UIComponent;
 use arboard::Clipboard;
 use std::cmp::min;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 mod buffer;
 use buffer::Buffer;
 use std::io::Error;
@@ -60,12 +61,43 @@ pub struct View {
     cache_version: u64,
     selection: Option<Selection>,
     undo_history: UndoHistory,
+    /// DAP 行番号（1-based）。現在バッファの行に印を出す。
+    breakpoint_lines: HashSet<usize>,
+    /// Current paused line (1-based) for the active file.
+    debug_stop_line: Option<usize>,
 }
 
 impl View {
     pub fn set_col_offset(&mut self, col_offset: usize) {
         self.col_offset = col_offset;
         self.mark_redraw(true);
+    }
+
+    pub fn set_breakpoint_lines(&mut self, lines: &[i64]) {
+        let new: HashSet<usize> = lines
+            .iter()
+            .filter_map(|&l| {
+                if l > 0 {
+                    usize::try_from(l).ok()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if new != self.breakpoint_lines {
+            self.breakpoint_lines = new;
+            self.mark_redraw(true);
+        }
+    }
+
+    pub fn set_debug_stop_line(&mut self, line: Option<i64>) {
+        let normalized = line
+            .and_then(|l| (l > 0).then_some(l))
+            .and_then(|l| usize::try_from(l).ok());
+        if normalized != self.debug_stop_line {
+            self.debug_stop_line = normalized;
+            self.mark_redraw(true);
+        }
     }
 
     pub fn get_status(&self) -> DocumentStatus {
@@ -84,6 +116,7 @@ impl View {
             file_name: format!("{}", self.buffer.file_info),
             is_modified: self.buffer.modified,
             language_name,
+            debug_state_label: None,
         }
     }
 
@@ -104,6 +137,30 @@ impl View {
 
     const GUTTER_WIDTH: usize = 5;
     const GUTTER_PADDING: usize = 2;
+
+    /// Line number column + optional markers (breakpoint/stopped) in same 7-col layout.
+    fn gutter_prefix_parts(&self, line_idx: usize) -> (String, String, bool, bool) {
+        let n = line_idx + 1;
+        let has_breakpoint = self.breakpoint_lines.contains(&n);
+        let is_stopped_line = self.debug_stop_line.is_some_and(|line| line == n);
+        let marker = if is_stopped_line {
+            "▶"
+        } else if has_breakpoint {
+            "●"
+        } else {
+            " "
+        };
+        let line_number_prefix = format!(
+            "{m}{:>w$}{pad}",
+            n,
+            m = marker,
+            w = Self::GUTTER_WIDTH - 1,
+            pad = " ".repeat(Self::GUTTER_PADDING)
+        );
+        // The format contains the marker as first character; split to style it separately.
+        let rest = line_number_prefix.chars().skip(1).collect::<String>();
+        (marker.to_string(), rest, has_breakpoint, is_stopped_line)
+    }
 
     #[allow(clippy::too_many_lines)]
     fn render_buffer(&mut self, origin_y: usize) -> Result<(), Error> {
@@ -156,12 +213,8 @@ impl View {
 
                 let left = self.scroll_offset.col;
                 let right = left + content_width;
-                let line_num_str = format!(
-                    "{:>w$}{pad}",
-                    line_idx + 1,
-                    w = Self::GUTTER_WIDTH - 1,
-                    pad = " ".repeat(Self::GUTTER_PADDING + 1)
-                );
+                let (marker, line_number_prefix, marker_is_breakpoint, marker_is_stopped) =
+                    self.gutter_prefix_parts(line_idx);
                 let query = self
                     .search_info
                     .as_ref()
@@ -184,10 +237,14 @@ impl View {
                                 selection_range,
                             });
                         state = new_state;
-                        Terminal::print_annotated_row_with_prefix(
+                        Terminal::print_annotated_row_with_gutter(
                             draw_row,
                             self.col_offset,
-                            &line_num_str,
+                            width,
+                            &marker,
+                            &line_number_prefix,
+                            marker_is_breakpoint,
+                            marker_is_stopped,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
                         )?;
@@ -208,10 +265,14 @@ impl View {
                                 selection_range,
                             });
                         state = final_state;
-                        Terminal::print_annotated_row_with_prefix(
+                        Terminal::print_annotated_row_with_gutter(
                             draw_row,
                             self.col_offset,
-                            &line_num_str,
+                            width,
+                            &marker,
+                            &line_number_prefix,
+                            marker_is_breakpoint,
+                            marker_is_stopped,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
                         )?;
@@ -227,10 +288,14 @@ impl View {
                                 selection_range,
                             });
                         state = new_state;
-                        Terminal::print_annotated_row_with_prefix(
+                        Terminal::print_annotated_row_with_gutter(
                             draw_row,
                             self.col_offset,
-                            &line_num_str,
+                            width,
+                            &marker,
+                            &line_number_prefix,
+                            marker_is_breakpoint,
+                            marker_is_stopped,
                             &annotated_string,
                             line_idx == self.text_location.line_idx,
                         )?;
@@ -252,10 +317,14 @@ impl View {
                             selection_range,
                         });
                     state = final_state;
-                    Terminal::print_annotated_row_with_prefix(
+                    Terminal::print_annotated_row_with_gutter(
                         draw_row,
                         self.col_offset,
-                        &line_num_str,
+                        width,
+                        &marker,
+                        &line_number_prefix,
+                        marker_is_breakpoint,
+                        marker_is_stopped,
                         &annotated_string,
                         line_idx == self.text_location.line_idx,
                     )?;
@@ -271,10 +340,14 @@ impl View {
                             selection_range,
                         });
                     state = new_state;
-                    Terminal::print_annotated_row_with_prefix(
+                    Terminal::print_annotated_row_with_gutter(
                         draw_row,
                         self.col_offset,
-                        &line_num_str,
+                        width,
+                        &marker,
+                        &line_number_prefix,
+                        marker_is_breakpoint,
+                        marker_is_stopped,
                         &annotated_string,
                         line_idx == self.text_location.line_idx,
                     )?;
@@ -317,14 +390,23 @@ impl View {
     }
 
     pub fn caret_position(&self) -> Position {
-        let Position { col, row } = self
+        let Size { height, .. } = self.size;
+        let mut rel = self
             .text_location_to_position()
             .saturating_sub(self.scroll_offset);
+        // After the view height shrinks (e.g. the bottom debug panel appears), the scroll
+        // update can lag one frame: `line_idx - scroll` may equal the old `height` and the
+        // caret would be drawn on the first row *below* the view (the debug panel).
+        if height > 0 {
+            rel.row = rel.row.min(height - 1);
+        } else {
+            rel.row = 0;
+        }
 
         let gutter_total = Self::GUTTER_WIDTH + Self::GUTTER_PADDING;
         Position {
-            col: col + gutter_total + self.col_offset,
-            row,
+            col: rel.col + gutter_total + self.col_offset,
+            row: rel.row,
         }
     }
 
@@ -1206,6 +1288,14 @@ impl View {
 
     pub const fn is_file_loaded(&self) -> bool {
         self.buffer.is_file_loaded()
+    }
+
+    pub fn file_path(&self) -> Option<PathBuf> {
+        self.buffer.file_info.get_path().map(std::path::Path::to_path_buf)
+    }
+
+    pub const fn current_line_index(&self) -> usize {
+        self.text_location.line_idx
     }
 
     pub fn save_as(&mut self, file_name: &str) -> Result<(), Error> {

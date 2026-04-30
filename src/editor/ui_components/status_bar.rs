@@ -39,9 +39,15 @@ impl UIComponent for StatusBar {
             .as_ref()
             .map(|lang| format!(" ({lang})"))
             .unwrap_or_default();
+        let debug_indicator = self
+            .current_status
+            .debug_state_label
+            .as_ref()
+            .map(|s| format!(" [{s}]"))
+            .unwrap_or_default();
 
         let beginning = format!(
-            "{}{language_indicator} - {line_count} {modified_indicator}",
+            "{}{language_indicator}{debug_indicator} - {line_count} {modified_indicator}",
             self.current_status.file_name
         );
 

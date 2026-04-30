@@ -11,25 +11,33 @@ use position::Position;
 use size::Size;
 mod document_status;
 use document_status::DocumentStatus;
+use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     env,
     io::Error,
     panic::{set_hook, take_hook},
     path::{Component, Path, PathBuf},
+    process::{Command as ProcessCommand, Stdio},
 };
 use terminal::Terminal;
 mod command;
+mod debugger;
 mod terminal_pane;
+use debugger::{AdapterConfig, DapSession, DebugState, discover_adapter_configs};
 use terminal_pane::TerminalPane;
-use ui_components::{CommandBar, FileTree, MessageBar, StatusBar, UIComponent, View};
+use ui_components::{CommandBar, DebugPanel, FileTree, MessageBar, StatusBar, UIComponent, View};
 mod ui_components;
 use self::command::{
     Command::{self, Edit, Move, System},
     Edit::InsertNewline,
     MoveDirection,
     System::{
-        CreateFile, CreateFolder, Dismiss, FocusSidebar, FocusTerminal, FocusView, Quit, Replace,
-        Resize, Save, Search, ToggleSidebar, ToggleTerminal,
+        CollapseVariable, Continue, CreateFile, CreateFolder, DisconnectDebug, Dismiss,
+        ExpandVariable, FocusDebuggerSidebar, FocusSidebar, FocusTerminal, FocusView, NextFrame,
+        NextThread, NextVariable, Pause, PrevFrame, PrevThread, PrevVariable, Quit, Replace,
+        Resize, RestartDebug, Save, Search, StartDebug, StepInto, StepOut, StepOver, StopDebug,
+        ToggleBreakpoint, ToggleSidebar, ToggleTerminal,
     },
 };
 
@@ -48,6 +56,13 @@ enum PromptType {
     CreateFolder,
     #[default]
     None,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Default)]
+enum SidebarMode {
+    #[default]
+    Explorer,
+    Debugger,
 }
 
 impl PromptType {
@@ -71,9 +86,25 @@ pub struct Editor {
     sidebar: FileTree,
     sidebar_visible: bool,
     sidebar_focus: bool,
+    sidebar_mode: SidebarMode,
     terminal_pane: TerminalPane,
     terminal_visible: bool,
     terminal_focus: bool,
+    debug_panel: DebugPanel,
+    debug_adapters: Vec<AdapterConfig>,
+    active_debug_adapter: Option<AdapterConfig>,
+    debug_session: Option<DapSession>,
+    debug_state: DebugState,
+    breakpoints: HashMap<PathBuf, Vec<i64>>,
+    pending_configuration_done: bool,
+    debug_stack_after_threads: bool,
+    stacktrace_retry_attempted: bool,
+    verified_breakpoint_count: usize,
+    pending_continue_after_entry: bool,
+    pending_launch_arguments: Option<Value>,
+    debug_paused: bool,
+    current_variables_reference: Option<i64>,
+    variables_reference_stack: Vec<i64>,
 }
 
 impl Editor {
@@ -125,9 +156,25 @@ impl Editor {
             sidebar,
             sidebar_visible,
             sidebar_focus,
+            sidebar_mode: SidebarMode::Explorer,
             terminal_pane: TerminalPane::new(),
             terminal_visible: false,
             terminal_focus: false,
+            debug_panel: DebugPanel::new(),
+            debug_adapters: discover_adapter_configs(),
+            active_debug_adapter: None,
+            debug_session: None,
+            debug_state: DebugState::default(),
+            breakpoints: HashMap::new(),
+            pending_configuration_done: false,
+            debug_stack_after_threads: false,
+            stacktrace_retry_attempted: false,
+            verified_breakpoint_count: 0,
+            pending_continue_after_entry: false,
+            pending_launch_arguments: None,
+            debug_paused: false,
+            current_variables_reference: None,
+            variables_reference_stack: Vec::new(),
         };
 
         let size = Terminal::size().unwrap_or_default();
@@ -152,6 +199,7 @@ impl Editor {
     pub fn run(&mut self) {
         loop {
             let _ = self.terminal_pane.poll();
+            self.poll_debug_events();
             if self.needs_refresh() {
                 self.refresh_screen();
             }
@@ -171,7 +219,13 @@ impl Editor {
                 }
             }
             let _ = self.terminal_pane.poll();
-            let status = self.view.get_status();
+            self.poll_debug_events();
+            let mut status = self.view.get_status();
+            status.debug_state_label = if self.debug_state.active {
+                Some(if self.debug_paused { "PAUSED" } else { "RUNNING" }.to_string())
+            } else {
+                None
+            };
             self.status_bar.update_status(status);
         }
     }
@@ -197,7 +251,12 @@ impl Editor {
         }
 
         if self.terminal_visible && self.terminal_focus && self.prompt_type.is_none() {
-            if let Event::Key(KeyEvent { code, modifiers, kind, .. }) = &event
+            if let Event::Key(KeyEvent {
+                code,
+                modifiers,
+                kind,
+                ..
+            }) = &event
                 && kind == &KeyEventKind::Press
             {
                 use crossterm::event::KeyCode;
@@ -209,13 +268,16 @@ impl Editor {
                     }
                     return;
                 }
+                if let Ok(cmd) = Command::try_from(event.clone())
+                    && let System(
+                        Quit | FocusView | FocusTerminal | ToggleTerminal | FocusSidebar
+                        | FocusDebuggerSidebar,
+                    ) = cmd
+                {
+                    self.process_command(cmd);
+                    return;
+                }
                 if *modifiers == KeyModifiers::CONTROL {
-                    if let Ok(cmd) = Command::try_from(event.clone())
-                        && let System(Quit | FocusView | FocusTerminal | ToggleTerminal) = cmd
-                    {
-                        self.process_command(cmd);
-                        return;
-                    }
                     if let KeyCode::Char('c') = code {
                         let _ = self.terminal_pane.write(&[0x03]);
                         return;
@@ -278,24 +340,28 @@ impl Editor {
         self.reset_quit_times();
 
         if self.sidebar_visible && self.sidebar_focus {
-            let tree_consumed = match &command {
+            let sidebar_consumed = match &command {
                 Move(m) if !m.is_selection => {
-                    match self.sidebar.handle_move(m.direction) {
-                        Ok(moved) => {
-                            if moved {
-                                self.sidebar.mark_redraw(true);
+                    if self.sidebar_mode == SidebarMode::Explorer {
+                        match self.sidebar.handle_move(m.direction) {
+                            Ok(moved) => {
+                                if moved {
+                                    self.sidebar.mark_redraw(true);
+                                }
                             }
+                            Err(e) => self.update_message(&format!("File tree error: {e}")),
                         }
-                        Err(e) => self.update_message(&format!("File tree error: {e}")),
                     }
                     true
                 }
                 Edit(InsertNewline) => {
-                    if let Err(e) = self.sidebar.handle_enter() {
-                        self.update_message(&format!("File tree error: {e}"));
+                    if self.sidebar_mode == SidebarMode::Explorer {
+                        if let Err(e) = self.sidebar.handle_enter() {
+                            self.update_message(&format!("File tree error: {e}"));
+                        }
+                        self.sidebar.mark_redraw(true);
+                        self.open_from_sidebar_selection();
                     }
-                    self.sidebar.mark_redraw(true);
-                    self.open_from_sidebar_selection();
                     true
                 }
                 Move(_) | Edit(_) => true,
@@ -313,13 +379,17 @@ impl Editor {
                     self.focus_sidebar();
                     true
                 }
+                System(FocusDebuggerSidebar) => {
+                    self.focus_debugger_sidebar();
+                    true
+                }
                 System(FocusView) => {
                     self.focus_view();
                     true
                 }
                 System(_) => false,
             };
-            if tree_consumed {
+            if sidebar_consumed {
                 return;
             }
         }
@@ -328,9 +398,35 @@ impl Editor {
             System(Quit | Resize(_)) => {}
             System(ToggleSidebar) => self.toggle_sidebar(),
             System(FocusSidebar) => self.focus_sidebar(),
+            System(FocusDebuggerSidebar) => self.focus_debugger_sidebar(),
             System(FocusView) => self.focus_view(),
             System(ToggleTerminal) => self.toggle_terminal(),
             System(FocusTerminal) => self.focus_terminal(),
+            System(StartDebug) => {
+                self.focus_debugger_sidebar();
+                if self.debug_session.is_some() {
+                    self.continue_debug();
+                } else {
+                    self.start_debug();
+                }
+            }
+            System(StopDebug) => self.stop_debug(),
+            System(ToggleBreakpoint) => self.toggle_breakpoint(),
+            System(StepOver) => self.step_over(),
+            System(StepInto) => self.step_into(),
+            System(StepOut) => self.step_out(),
+            System(Continue) => self.continue_debug(),
+            System(Pause) => self.pause_debug(),
+            System(RestartDebug) => self.restart_debug(),
+            System(DisconnectDebug) => self.disconnect_debug(),
+            System(NextThread) => self.select_next_thread(),
+            System(PrevThread) => self.select_prev_thread(),
+            System(NextFrame) => self.select_next_frame(),
+            System(PrevFrame) => self.select_prev_frame(),
+            System(NextVariable) => self.select_next_variable(),
+            System(PrevVariable) => self.select_prev_variable(),
+            System(ExpandVariable) => self.expand_selected_variable(),
+            System(CollapseVariable) => self.collapse_variable_scope(),
             System(Dismiss) => self.view.clear_selection(),
             System(Search) => self.set_prompt(PromptType::Search),
             System(Replace) => self.set_prompt(PromptType::ReplaceSearch),
@@ -350,6 +446,7 @@ impl Editor {
         self.sidebar_visible = !self.sidebar_visible;
         if self.sidebar_visible {
             self.sidebar_focus = true;
+            self.sidebar_mode = SidebarMode::Explorer;
             if let Err(e) = self.sidebar.rebuild() {
                 self.update_message(&format!("File tree error: {e}"));
             }
@@ -359,6 +456,7 @@ impl Editor {
         self.resize(self.terminal_size);
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
+        self.debug_panel.mark_redraw(true);
     }
 
     fn focus_sidebar(&mut self) {
@@ -366,12 +464,28 @@ impl Editor {
             self.sidebar_visible = true;
             self.resize(self.terminal_size);
         }
+        self.sidebar_mode = SidebarMode::Explorer;
         self.sidebar_focus = true;
         if let Err(e) = self.sidebar.rebuild() {
             self.update_message(&format!("File tree error: {e}"));
         }
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
+        self.debug_panel.mark_redraw(true);
+    }
+
+    fn focus_debugger_sidebar(&mut self) {
+        if !self.sidebar_visible {
+            self.sidebar_visible = true;
+            self.resize(self.terminal_size);
+        }
+        self.sidebar_mode = SidebarMode::Debugger;
+        // Read-only summary; keep keyboard focus in the editor.
+        self.sidebar_focus = false;
+        self.terminal_focus = false;
+        self.sidebar.mark_redraw(true);
+        self.view.mark_redraw(true);
+        self.debug_panel.mark_redraw(true);
     }
 
     fn focus_view(&mut self) {
@@ -379,6 +493,7 @@ impl Editor {
         self.terminal_focus = false;
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
+        self.debug_panel.mark_redraw(true);
     }
 
     fn toggle_terminal(&mut self) {
@@ -394,6 +509,7 @@ impl Editor {
         self.resize(size);
         self.view.mark_redraw(true);
         self.terminal_pane.mark_redraw(true);
+        self.debug_panel.mark_redraw(true);
     }
 
     fn focus_terminal(&mut self) {
@@ -407,6 +523,7 @@ impl Editor {
         self.sidebar_focus = false;
         self.terminal_pane.mark_redraw(true);
         self.view.mark_redraw(true);
+        self.debug_panel.mark_redraw(true);
     }
 
     fn start_terminal_if_needed(&mut self) {
@@ -444,6 +561,1093 @@ impl Editor {
         }
     }
 
+    fn active_file_extension(&self) -> Option<String> {
+        self.view.file_path().and_then(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .map(str::to_lowercase)
+        })
+    }
+
+    fn select_debug_adapter(&self) -> Option<&AdapterConfig> {
+        let ext = self.active_file_extension()?;
+        self.debug_adapters.iter().find(|adapter| {
+            adapter
+                .file_extensions
+                .iter()
+                .any(|candidate| candidate == &ext)
+        })
+    }
+
+    fn start_debug(&mut self) {
+        if self.debug_session.is_some() {
+            self.update_message("Debug session is already running.");
+            return;
+        }
+        let Some(adapter) = self.select_debug_adapter().cloned() else {
+            self.update_message("No debug adapter for current file.");
+            return;
+        };
+        if let Err(msg) = Self::ensure_adapter_ready(&adapter) {
+            self.update_message(&msg);
+            return;
+        }
+        let debug_cwd = if adapter.dap_adapter_type.eq_ignore_ascii_case("dlv-dap") {
+            let file_path = self.view.file_path();
+            Some(
+                file_path
+                    .as_deref()
+                    .map(|p| Self::resolve_go_launch_dir(p, self.sidebar.workspace_root()))
+                    .unwrap_or_else(|| self.sidebar.workspace_root().to_path_buf()),
+            )
+        } else {
+            None
+        };
+
+        match DapSession::start(&adapter, debug_cwd.as_deref()) {
+            Ok(mut session) => {
+                if let Err(e) = session.send_request(
+                    "initialize",
+                    json!({
+                        "clientID": "den",
+                        "clientName": "den",
+                        "adapterID": adapter.dap_adapter_type,
+                        "linesStartAt1": true,
+                        "columnsStartAt1": true,
+                        "pathFormat": "path"
+                    }),
+                ) {
+                    self.update_message(&format!("Debug init error: {e}"));
+                    return;
+                }
+                let launch_args = match self.build_launch_arguments(&adapter) {
+                    Ok(args) => args,
+                    Err(msg) => {
+                        self.update_message(&msg);
+                        return;
+                    }
+                };
+                self.debug_session = Some(session);
+                self.active_debug_adapter = Some(adapter.clone());
+                self.debug_state.active = true;
+                self.debug_paused = false;
+                self.pending_launch_arguments = Some(launch_args);
+                self.debug_panel.update(&self.debug_state);
+                self.update_message(&format!(
+                    "Debug initializing: {}",
+                    adapter.display_name
+                ));
+            }
+            Err(e) => {
+                self.update_message(&format!("Debug start error: {e}"));
+            }
+        }
+    }
+
+    fn clear_debug_session_process(&mut self) {
+        if let Some(session) = &mut self.debug_session {
+            session.stop();
+        }
+        self.debug_session = None;
+        self.active_debug_adapter = None;
+    }
+
+    fn reset_debug_editor_state_after_stop(&mut self) {
+        self.debug_state.active = false;
+        self.debug_paused = false;
+        self.pending_configuration_done = false;
+        self.debug_state.current_thread_id = None;
+        self.debug_state.threads.clear();
+        self.debug_state.selected_thread_idx = 0;
+        self.debug_state.stack_frames.clear();
+        self.debug_state.selected_frame_idx = 0;
+        self.debug_state.variables.clear();
+        self.debug_state.selected_variable_idx = 0;
+        self.debug_state.variable_path.clear();
+        self.current_variables_reference = None;
+        self.variables_reference_stack.clear();
+        self.view.set_debug_stop_line(None);
+        self.debug_stack_after_threads = false;
+        self.stacktrace_retry_attempted = false;
+        self.verified_breakpoint_count = 0;
+        self.pending_continue_after_entry = false;
+        self.pending_launch_arguments = None;
+        self.debug_panel.update(&self.debug_state);
+    }
+
+    fn stop_debug(&mut self) {
+        self.clear_debug_session_process();
+        self.reset_debug_editor_state_after_stop();
+        self.update_message("Debug stopped.");
+    }
+
+    fn stop_debug_with_message(&mut self, message: &str) {
+        self.clear_debug_session_process();
+        self.reset_debug_editor_state_after_stop();
+        self.update_message(message);
+    }
+
+    fn poll_debug_events(&mut self) {
+        let mut should_stop = false;
+        let mut stop_message: Option<String> = None;
+        let mut had_activity = false;
+        loop {
+            let event = self.debug_session.as_ref().and_then(DapSession::try_recv);
+            let Some(event) = event else { break };
+            had_activity = true;
+            match event {
+                debugger::DapEvent::Message(envelope) => match envelope.message {
+                    debugger::DapMessage::Event { event, body, .. } => {
+                        if event == "initialized" {
+                            self.send_configuration_done_if_pending();
+                        } else if event == "stopped" {
+                            let reason = body
+                                .get("reason")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("");
+                            let is_dlv = self
+                                .active_debug_adapter
+                                .as_ref()
+                                .is_some_and(|a| a.dap_adapter_type.eq_ignore_ascii_case("dlv-dap"));
+                            if is_dlv && reason == "entry" {
+                                // Delve is paused at entry; re-sync breakpoints now and continue.
+                                self.pending_continue_after_entry = false;
+                                self.sync_all_breakpoints();
+                                self.update_message(
+                                    "Delve entry stop -> breakpoints synced, continuing...",
+                                );
+                                self.continue_debug();
+                                continue;
+                            }
+                            // Always resolve a valid thread id from `threads` response first.
+                            // Some adapters (notably dlv) may provide a stopped thread id that
+                            // is not directly usable for stackTrace.
+                            self.debug_state.current_thread_id =
+                                body.get("threadId").and_then(Self::dap_json_as_i64);
+                            self.debug_paused = true;
+                            self.debug_stack_after_threads = true;
+                            self.stacktrace_retry_attempted = false;
+                            self.request_threads();
+                            self.update_message("Debug paused.");
+                        } else if event == "continued" {
+                            self.debug_paused = false;
+                            self.view.set_debug_stop_line(None);
+                        } else if event == "terminated" || event == "exited" {
+                            // Adapter notified debuggee exit; stop session cleanly.
+                            let code = body
+                                .get("exitCode")
+                                .and_then(Self::dap_json_as_i64)
+                                .unwrap_or(0);
+                            stop_message = Some(format!("Debuggee exited (code {code})."));
+                            should_stop = true;
+                        }
+                    }
+                    debugger::DapMessage::Response {
+                        success,
+                        command,
+                        message,
+                        body,
+                        ..
+                    } => {
+                        if success {
+                            if command == "initialize" {
+                                self.send_launch_if_pending();
+                            }
+                            self.handle_debug_response(&command, &body);
+                            if command == "launch" {
+                                // dlv-dap may not emit `initialized`; fallback here.
+                                self.send_configuration_done_if_pending();
+                                if let Some(adapter) = &self.active_debug_adapter {
+                                    self.update_message(&format!(
+                                        "Debug started: {}",
+                                        adapter.display_name
+                                    ));
+                                } else {
+                                    self.update_message("Debug started.");
+                                }
+                            }
+                        } else {
+                            let detail = Self::dap_error_detail(&message, &body);
+                            if command == "stackTrace"
+                                && detail.contains("unknown goroutine 1")
+                                && self
+                                    .active_debug_adapter
+                                    .as_ref()
+                                    .is_some_and(|a| {
+                                        a.dap_adapter_type.eq_ignore_ascii_case("dlv-dap")
+                                    })
+                            {
+                                self.update_message(
+                                    "Delve entry stop produced invalid goroutine. Continuing...",
+                                );
+                                self.continue_debug();
+                                continue;
+                            }
+                            if command == "stackTrace"
+                                && detail.contains("unknown goroutine")
+                                && self.try_retry_stacktrace_for_dlv()
+                            {
+                                continue;
+                            }
+                            if command == "stackTrace"
+                                && detail.contains("has exited with status")
+                            {
+                                stop_message = Some("Debuggee has already exited.".to_string());
+                                should_stop = true;
+                                continue;
+                            }
+                            self.update_message(&format!("DAP {command} failed: {detail}"));
+                        }
+                    }
+                    debugger::DapMessage::Request { .. } => {}
+                },
+                debugger::DapEvent::Closed => should_stop = true,
+                debugger::DapEvent::Error(e) => self.update_message(&format!("DAP error: {e}")),
+            }
+        }
+        if should_stop {
+            if let Some(msg) = stop_message {
+                self.stop_debug_with_message(&msg);
+            } else {
+                self.stop_debug();
+            }
+        } else if had_activity {
+            self.status_bar.mark_redraw(true);
+            self.debug_panel.update(&self.debug_state);
+        }
+    }
+
+    fn request_threads(&mut self) {
+        self.with_debug_session(|session| {
+            session
+                .send_request("threads", json!({}))
+                .map_err(|e| format!("threads request error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn send_configuration_done_if_pending(&mut self) {
+        if !self.pending_configuration_done {
+            return;
+        }
+        self.sync_all_breakpoints();
+        self.with_debug_session(|session| {
+            session
+                .send_request("configurationDone", json!({}))
+                .map_err(|e| format!("DAP configurationDone failed: {e}"))?;
+            Ok(())
+        });
+        self.pending_configuration_done = false;
+    }
+
+    fn send_launch_if_pending(&mut self) {
+        let Some(arguments) = self.pending_launch_arguments.take() else {
+            return;
+        };
+        self.with_debug_session(|session| {
+            session
+                .send_request("launch", arguments.clone())
+                .map_err(|e| format!("Debug launch error: {e}"))?;
+            Ok(())
+        });
+        // Usually sent after `initialized`. For adapters that skip it (e.g. some dlv
+        // flows), we also send this after successful `launch` response.
+        self.pending_configuration_done = true;
+    }
+
+    fn request_stack_trace(&mut self) {
+        let Some(thread_id) = self.debug_state.current_thread_id else {
+            return;
+        };
+        if thread_id == 0 {
+            return;
+        }
+        self.with_debug_session(|session| {
+            session
+                .send_request(
+                    "stackTrace",
+                    json!({
+                        "threadId": thread_id,
+                        "startFrame": 0,
+                        "levels": 20
+                    }),
+                )
+                .map_err(|e| format!("stackTrace request error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn request_scopes(&mut self, frame_id: i64) {
+        self.with_debug_session(|session| {
+            session
+                .send_request("scopes", json!({ "frameId": frame_id }))
+                .map_err(|e| format!("scopes request error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn request_variables(&mut self, reference: i64) {
+        self.with_debug_session(|session| {
+            session
+                .send_request("variables", json!({ "variablesReference": reference }))
+                .map_err(|e| format!("variables request error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn handle_debug_response(&mut self, command: &str, body: &serde_json::Value) {
+        match command {
+            "threads" => {
+                let threads = body
+                    .get("threads")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|v| debugger::ThreadSummary {
+                                id: v.get("id").and_then(Self::dap_json_as_i64).unwrap_or(0),
+                                name: v
+                                    .get("name")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                self.debug_state.threads = threads;
+                if self.debug_state.threads.is_empty() {
+                    self.debug_state.selected_thread_idx = 0;
+                } else if let Some(id) = self.debug_state.current_thread_id {
+                    self.debug_state.selected_thread_idx = self
+                        .debug_state
+                        .threads
+                        .iter()
+                        .position(|t| t.id == id)
+                        .unwrap_or(0);
+                } else {
+                    self.debug_state.selected_thread_idx = 0;
+                }
+                if self.debug_stack_after_threads {
+                    self.debug_stack_after_threads = false;
+                    // Prefer stopped thread id only if it exists in the current thread list.
+                    let stopped_id = self.debug_state.current_thread_id;
+                    let resolved = stopped_id.and_then(|id| {
+                        self.debug_state
+                            .threads
+                            .iter()
+                            .any(|t| t.id == id && t.id != 0)
+                            .then_some(id)
+                    });
+                    if resolved.is_some() {
+                        self.debug_state.current_thread_id = resolved;
+                    } else if let Some(t) = self
+                        .debug_state
+                        .threads
+                        .iter()
+                        .find(|t| t.id != 0 && t.id != 1)
+                        .or_else(|| self.debug_state.threads.iter().find(|t| t.id != 0))
+                    {
+                        self.debug_state.current_thread_id = Some(t.id);
+                    }
+                    if self.debug_state.current_thread_id.is_some() {
+                        self.request_stack_trace();
+                    }
+                }
+            }
+            "stackTrace" => {
+                let frames = body
+                    .get("stackFrames")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|v| debugger::StackFrameSummary {
+                                id: v.get("id").and_then(Self::dap_json_as_i64).unwrap_or(0),
+                                name: v
+                                    .get("name")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                                line: v
+                                    .get("line")
+                                    .and_then(serde_json::Value::as_i64)
+                                    .unwrap_or(0),
+                                column: v
+                                    .get("column")
+                                    .and_then(serde_json::Value::as_i64)
+                                    .unwrap_or(0),
+                                source_path: v
+                                    .get("source")
+                                    .and_then(|s| s.get("path"))
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let frame_id = frames.first().map_or(0, |f| f.id);
+                let pause_line = frames.first().map(|f| f.line);
+                let is_current_file = frames.first().is_some_and(|f| {
+                    self.view.file_path().is_some_and(|path| {
+                        let current = Self::dap_source_path_string(&path);
+                        current == f.source_path
+                    })
+                });
+                self.debug_state.stack_frames = frames;
+                self.debug_state.selected_frame_idx = 0;
+                if is_current_file {
+                    self.view.set_debug_stop_line(pause_line);
+                } else {
+                    self.view.set_debug_stop_line(None);
+                }
+                if frame_id != 0 {
+                    self.request_scopes(frame_id);
+                }
+            }
+            "scopes" => {
+                let reference = body
+                    .get("scopes")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|arr| {
+                        arr.iter().find_map(|scope| {
+                            let r = scope.get("variablesReference")?;
+                            let n = Self::dap_json_as_i64(r)?;
+                            (n > 0).then_some(n)
+                        })
+                    })
+                    .or_else(|| {
+                        body.get("scopes")
+                            .and_then(serde_json::Value::as_array)
+                            .and_then(|a| a.first())
+                            .and_then(|s| s.get("variablesReference"))
+                            .and_then(Self::dap_json_as_i64)
+                    })
+                    .unwrap_or(0);
+                if reference != 0 {
+                    self.current_variables_reference = Some(reference);
+                    self.variables_reference_stack.clear();
+                    self.debug_state.variable_path.clear();
+                    self.debug_state.selected_variable_idx = 0;
+                    self.request_variables(reference);
+                }
+            }
+            "variables" => {
+                let vars = body
+                    .get("variables")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|v| {
+                                let val = v
+                                    .get("value")
+                                    .map(Self::dap_json_as_display)
+                                    .unwrap_or_default();
+                                debugger::VariableSummary {
+                                    name: v
+                                        .get("name")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    value: val,
+                                    type_name: v
+                                        .get("type")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    variables_reference: v
+                                        .get("variablesReference")
+                                        .and_then(Self::dap_json_as_i64)
+                                        .unwrap_or(0),
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                self.debug_state.variables = vars;
+                if self.debug_state.variables.is_empty() {
+                    self.debug_state.selected_variable_idx = 0;
+                } else if self.debug_state.selected_variable_idx >= self.debug_state.variables.len() {
+                    self.debug_state.selected_variable_idx =
+                        self.debug_state.variables.len().saturating_sub(1);
+                }
+            }
+            "setBreakpoints" => {
+                let (verified, total, first_reason) = body
+                    .get("breakpoints")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|arr| {
+                        let ok = arr
+                            .iter()
+                            .filter(|bp| {
+                                bp.get("verified")
+                                    .and_then(serde_json::Value::as_bool)
+                                    .unwrap_or(false)
+                            })
+                            .count();
+                        let reason = arr.iter().find_map(|bp| {
+                            let is_verified = bp
+                                .get("verified")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false);
+                            if is_verified {
+                                None
+                            } else {
+                                bp.get("message")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_string)
+                            }
+                        });
+                        (ok, arr.len(), reason)
+                    })
+                    .unwrap_or((0, 0, None));
+                self.verified_breakpoint_count = verified;
+                if total > 0 {
+                    if verified == 0 {
+                        if let Some(reason) = first_reason {
+                            self.update_message(&format!(
+                                "Breakpoints verified: 0/{total} ({reason})"
+                            ));
+                        } else {
+                            self.update_message(&format!("Breakpoints verified: 0/{total}"));
+                        }
+                    } else {
+                        self.update_message(&format!("Breakpoints verified: {verified}/{total}"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn dap_json_as_i64(v: &Value) -> Option<i64> {
+        v.as_i64()
+            .or_else(|| v.as_u64().and_then(|u| i64::try_from(u).ok()))
+            .or_else(|| {
+                v.as_f64()
+                    .filter(|f| f.is_finite() && f.fract() == 0.0)
+                    .map(|f| f as i64)
+            })
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    }
+
+    fn dap_json_as_display(v: &Value) -> String {
+        match v {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Null => String::new(),
+            _ => v.to_string(),
+        }
+    }
+
+    fn dap_error_detail(message: &str, body: &Value) -> String {
+        // Many adapters (including dlv) put the real reason in body.error.{format,message}.
+        if let Some(err) = body.get("error") {
+            if let Some(s) = err.get("format").and_then(Value::as_str) {
+                return s.to_string();
+            }
+            if let Some(s) = err.get("message").and_then(Value::as_str) {
+                return s.to_string();
+            }
+            if let Some(s) = err.as_str() {
+                return s.to_string();
+            }
+        }
+        if !message.is_empty() {
+            return message.to_string();
+        }
+        body.to_string()
+    }
+
+    fn try_retry_stacktrace_for_dlv(&mut self) -> bool {
+        let is_dlv = self
+            .active_debug_adapter
+            .as_ref()
+            .is_some_and(|a| a.dap_adapter_type.eq_ignore_ascii_case("dlv-dap"));
+        if !is_dlv || self.stacktrace_retry_attempted {
+            return false;
+        }
+        let current = self.debug_state.current_thread_id.unwrap_or(0);
+        let next = self
+            .debug_state
+            .threads
+            .iter()
+            .find(|t| t.id != 0 && t.id != 1 && t.id != current)
+            .or_else(|| {
+                self.debug_state
+                    .threads
+                    .iter()
+                    .find(|t| t.id != 0 && t.id != current)
+            })
+            .map(|t| t.id);
+        let Some(next_id) = next else {
+            return false;
+        };
+        self.stacktrace_retry_attempted = true;
+        self.debug_state.current_thread_id = Some(next_id);
+        self.request_stack_trace();
+        self.update_message(&format!("Retrying stackTrace with goroutine {next_id}..."));
+        true
+    }
+
+    fn dap_source_path_string(path: &Path) -> String {
+        let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        #[cfg(windows)]
+        {
+            // Some debug adapters fail to bind breakpoints when paths include the `\\?\` prefix.
+            let raw = resolved.to_string_lossy();
+            if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+                return stripped.to_string();
+            }
+            return raw.to_string();
+        }
+        #[cfg(not(windows))]
+        {
+            resolved.to_string_lossy().to_string()
+        }
+    }
+
+    fn resolve_go_launch_dir(file_path: &Path, workspace: &Path) -> PathBuf {
+        // Prefer the nearest directory containing go.mod starting from the active file directory.
+        let mut dir = file_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| workspace.to_path_buf());
+        loop {
+            if dir.join("go.mod").is_file() {
+                return dir;
+            }
+            let Some(parent) = dir.parent() else { break };
+            let parent = parent.to_path_buf();
+            if parent == dir {
+                break;
+            }
+            dir = parent;
+        }
+        // Fallback to active file directory when module root is not found.
+        file_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| workspace.to_path_buf())
+    }
+
+    fn expand_launch_templates(value: &mut Value) {
+        match value {
+            Value::String(s) => {
+                let expanded = s
+                    .replace("${tmpDir}", &env::temp_dir().to_string_lossy())
+                    .replace("${pid}", &std::process::id().to_string());
+                *s = expanded;
+            }
+            Value::Array(arr) => {
+                for item in arr {
+                    Self::expand_launch_templates(item);
+                }
+            }
+            Value::Object(map) => {
+                for item in map.values_mut() {
+                    Self::expand_launch_templates(item);
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) => {}
+        }
+    }
+
+    fn merge_launch_overrides(base: &mut Value, overrides: &Value) {
+        let (Some(base_obj), Some(override_obj)) = (base.as_object_mut(), overrides.as_object())
+        else {
+            return;
+        };
+        for (key, value) in override_obj {
+            base_obj.insert(key.clone(), value.clone());
+        }
+    }
+
+    fn build_launch_arguments(&self, adapter: &AdapterConfig) -> Result<serde_json::Value, String> {
+        let file_path = self
+            .view
+            .file_path()
+            .ok_or_else(|| "Open a file before starting debug.".to_string())?;
+        let workspace = self.sidebar.workspace_root().to_path_buf();
+
+        let mut args = if adapter.dap_adapter_type.eq_ignore_ascii_case("debugpy") {
+            json!({
+                "name": "Debug current file",
+                "type": "python",
+                "request": "launch",
+                "program": file_path,
+                "cwd": workspace
+            })
+        } else if adapter.dap_adapter_type.eq_ignore_ascii_case("codelldb") {
+            let stem = file_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| "Could not resolve binary name from file.".to_string())?;
+            let exe = if cfg!(windows) {
+                workspace
+                    .join("target")
+                    .join("debug")
+                    .join(format!("{stem}.exe"))
+            } else {
+                workspace.join("target").join("debug").join(stem)
+            };
+            json!({
+                "name": "Debug current binary",
+                "type": "lldb",
+                "request": "launch",
+                "program": exe,
+                "cwd": workspace
+            })
+        } else if adapter.dap_adapter_type.eq_ignore_ascii_case("dlv-dap") {
+            let launch_dir = Self::resolve_go_launch_dir(&file_path, &workspace);
+            json!({
+                "name": "Debug current Go package",
+                "type": "go",
+                "request": "launch",
+                "mode": "debug",
+                // `dlv dap` on Windows is more reliable with program="." + cwd=<package dir>.
+                "program": ".",
+                "cwd": launch_dir,
+                "stopOnEntry": true
+            })
+        } else {
+            return Err(format!(
+                "Unsupported adapter type for launch: {}",
+                adapter.dap_adapter_type
+            ));
+        };
+        let mut overrides = adapter.launch_overrides.clone();
+        Self::expand_launch_templates(&mut overrides);
+        Self::merge_launch_overrides(&mut args, &overrides);
+        Ok(args)
+    }
+
+    fn ensure_adapter_ready(adapter: &AdapterConfig) -> Result<(), String> {
+        if adapter.dap_adapter_type.eq_ignore_ascii_case("debugpy") {
+            let python_ok = ProcessCommand::new("python")
+                .args(["-c", "import debugpy.adapter"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if python_ok {
+                return Ok(());
+            }
+
+            let py_launcher_ok = ProcessCommand::new("py")
+                .args(["-3", "-c", "import debugpy.adapter"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if py_launcher_ok {
+                return Ok(());
+            }
+
+            Err("Python/debugpy not found. Install: python -m pip install debugpy (or py -3 -m pip install debugpy)".to_string())
+        } else {
+            let mut cmd = ProcessCommand::new(&adapter.command);
+            if adapter.dap_adapter_type.eq_ignore_ascii_case("dlv-dap") {
+                cmd.arg("version");
+            } else {
+                cmd.arg("--version");
+            }
+            match cmd
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+            {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        if adapter.dap_adapter_type.eq_ignore_ascii_case("codelldb") {
+                            Err("Rust debug adapter 'codelldb' is missing. Install VS Code CodeLLDB extension or add codelldb to PATH.".to_string())
+                        } else if adapter.dap_adapter_type.eq_ignore_ascii_case("dlv-dap") {
+                            Err("Go debug adapter 'dlv' is missing. Install: go install github.com/go-delve/delve/cmd/dlv@latest and add GOPATH/bin to PATH.".to_string())
+                        } else {
+                            Err(format!(
+                                "Debug adapter command not found: {}. Install it and add to PATH.",
+                                adapter.command
+                            ))
+                        }
+                    } else {
+                        Err(format!(
+                            "Failed to execute debug adapter '{}': {e}",
+                            adapter.command
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    fn with_debug_session<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut DapSession) -> Result<(), String>,
+    {
+        let Some(session) = &mut self.debug_session else {
+            self.update_message("Debug session is not running.");
+            return;
+        };
+        if let Err(e) = f(session) {
+            self.update_message(&e);
+        }
+    }
+
+    fn active_file_path(&self) -> Option<PathBuf> {
+        self.view.file_path()
+    }
+
+    fn toggle_breakpoint(&mut self) {
+        let Some(path) = self.active_file_path() else {
+            self.update_message("Open a file before toggling breakpoints.");
+            return;
+        };
+        let line =
+            i64::try_from(self.view.current_line_index().saturating_add(1)).unwrap_or(i64::MAX);
+        let entry = self.breakpoints.entry(path.clone()).or_default();
+        let added = if let Some(pos) = entry.iter().position(|l| *l == line) {
+            entry.remove(pos);
+            false
+        } else {
+            entry.push(line);
+            entry.sort_unstable();
+            true
+        };
+        let lines = entry.clone();
+
+        if self.debug_session.is_some() {
+            self.with_debug_session(|session| {
+                session
+                    .send_request(
+                        "setBreakpoints",
+                        json!({
+                            "source": { "path": Self::dap_source_path_string(&path) },
+                            "breakpoints": lines.iter().map(|line| json!({ "line": line })).collect::<Vec<_>>()
+                        }),
+                    )
+                    .map_err(|e| format!("setBreakpoints error: {e}"))?;
+                Ok(())
+            });
+            if added {
+                self.update_message(&format!("Breakpoint set at line {line}."));
+            } else {
+                self.update_message(&format!("Breakpoint removed at line {line}."));
+            }
+        } else if added {
+            self.update_message(&format!("Breakpoint set at line {line} (F5 to start debug)."));
+        } else {
+            self.update_message(&format!("Breakpoint removed at line {line}."));
+        }
+        self.view.mark_redraw(true);
+    }
+
+    fn sync_all_breakpoints(&mut self) {
+        let all = self.breakpoints.clone();
+        self.with_debug_session(|session| {
+            for (path, lines) in &all {
+                session
+                    .send_request(
+                        "setBreakpoints",
+                        json!({
+                            "source": { "path": Self::dap_source_path_string(path) },
+                            "breakpoints": lines.iter().map(|line| json!({ "line": line })).collect::<Vec<_>>()
+                        }),
+                    )
+                    .map_err(|e| format!("setBreakpoints sync error: {e}"))?;
+            }
+            Ok(())
+        });
+    }
+
+    fn continue_debug(&mut self) {
+        self.debug_paused = false;
+        self.view.set_debug_stop_line(None);
+        let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
+        self.with_debug_session(|session| {
+            session
+                .send_request("continue", json!({ "threadId": thread_id }))
+                .map_err(|e| format!("Continue error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn pause_debug(&mut self) {
+        let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
+        self.with_debug_session(|session| {
+            let mut args = serde_json::Map::new();
+            if thread_id != 0 {
+                args.insert("threadId".to_string(), json!(thread_id));
+            }
+            session
+                .send_request("pause", Value::Object(args))
+                .map_err(|e| format!("Pause error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn restart_debug(&mut self) {
+        self.debug_paused = false;
+        self.view.set_debug_stop_line(None);
+        self.with_debug_session(|session| {
+            session
+                .send_request("restart", json!({}))
+                .map_err(|e| format!("Restart error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn disconnect_debug(&mut self) {
+        self.with_debug_session(|session| {
+            session
+                .send_request("disconnect", json!({ "terminateDebuggee": false }))
+                .map_err(|e| format!("Disconnect error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn select_next_thread(&mut self) {
+        self.select_thread_with_offset(1);
+    }
+
+    fn select_prev_thread(&mut self) {
+        self.select_thread_with_offset(-1);
+    }
+
+    fn select_thread_with_offset(&mut self, delta: isize) {
+        let len = self.debug_state.threads.len();
+        if len == 0 {
+            return;
+        }
+        let current = self.debug_state.selected_thread_idx.min(len.saturating_sub(1)) as isize;
+        let next = (current + delta).rem_euclid(len as isize) as usize;
+        self.debug_state.selected_thread_idx = next;
+        if let Some(thread) = self.debug_state.threads.get(next) {
+            self.debug_state.current_thread_id = Some(thread.id);
+            self.request_stack_trace();
+        }
+    }
+
+    fn select_next_frame(&mut self) {
+        self.select_frame_with_offset(1);
+    }
+
+    fn select_prev_frame(&mut self) {
+        self.select_frame_with_offset(-1);
+    }
+
+    fn select_frame_with_offset(&mut self, delta: isize) {
+        let len = self.debug_state.stack_frames.len();
+        if len == 0 {
+            return;
+        }
+        let current = self.debug_state.selected_frame_idx.min(len.saturating_sub(1)) as isize;
+        let next = (current + delta).rem_euclid(len as isize) as usize;
+        self.debug_state.selected_frame_idx = next;
+        if let Some(frame) = self.debug_state.stack_frames.get(next).cloned() {
+            if frame.id != 0 {
+                self.request_scopes(frame.id);
+            }
+            if self.view.file_path().is_some_and(|path| Self::dap_source_path_string(&path) == frame.source_path) {
+                self.view.set_debug_stop_line(Some(frame.line));
+            } else {
+                self.view.set_debug_stop_line(None);
+            }
+            self.update_message(&format!("Selected frame #{next}: {}", frame.name));
+        }
+    }
+
+    fn select_next_variable(&mut self) {
+        self.select_variable_with_offset(1);
+    }
+
+    fn select_prev_variable(&mut self) {
+        self.select_variable_with_offset(-1);
+    }
+
+    fn select_variable_with_offset(&mut self, delta: isize) {
+        let len = self.debug_state.variables.len();
+        if len == 0 {
+            return;
+        }
+        let current = self
+            .debug_state
+            .selected_variable_idx
+            .min(len.saturating_sub(1)) as isize;
+        let next = (current + delta).rem_euclid(len as isize) as usize;
+        self.debug_state.selected_variable_idx = next;
+    }
+
+    fn expand_selected_variable(&mut self) {
+        let Some(var) = self
+            .debug_state
+            .variables
+            .get(self.debug_state.selected_variable_idx)
+            .cloned()
+        else {
+            return;
+        };
+        if var.variables_reference <= 0 {
+            return;
+        }
+        if let Some(current_ref) = self.current_variables_reference {
+            self.variables_reference_stack.push(current_ref);
+        }
+        self.current_variables_reference = Some(var.variables_reference);
+        self.debug_state.variable_path.push(var.name.clone());
+        self.debug_state.selected_variable_idx = 0;
+        self.request_variables(var.variables_reference);
+    }
+
+    fn collapse_variable_scope(&mut self) {
+        let Some(previous_ref) = self.variables_reference_stack.pop() else {
+            return;
+        };
+        self.current_variables_reference = Some(previous_ref);
+        self.debug_state.variable_path.pop();
+        self.debug_state.selected_variable_idx = 0;
+        self.request_variables(previous_ref);
+    }
+
+    fn step_over(&mut self) {
+        self.debug_paused = false;
+        self.view.set_debug_stop_line(None);
+        let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
+        self.with_debug_session(|session| {
+            session
+                .send_request("next", json!({ "threadId": thread_id }))
+                .map_err(|e| format!("StepOver error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn step_into(&mut self) {
+        self.debug_paused = false;
+        self.view.set_debug_stop_line(None);
+        let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
+        self.with_debug_session(|session| {
+            session
+                .send_request("stepIn", json!({ "threadId": thread_id }))
+                .map_err(|e| format!("StepInto error: {e}"))?;
+            Ok(())
+        });
+    }
+
+    fn step_out(&mut self) {
+        self.debug_paused = false;
+        self.view.set_debug_stop_line(None);
+        let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
+        self.with_debug_session(|session| {
+            session
+                .send_request("stepOut", json!({ "threadId": thread_id }))
+                .map_err(|e| format!("StepOut error: {e}"))?;
+            Ok(())
+        });
+    }
+
     fn process_command_during_search(&mut self, command: Command) {
         match command {
             System(Dismiss) => {
@@ -474,7 +1678,11 @@ impl Editor {
             }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
+                | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
+                | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
+                | ExpandVariable | CollapseVariable,
             )
             | Move(_) => {}
         }
@@ -483,18 +1691,12 @@ impl Editor {
     fn process_command_during_save(&mut self, command: Command) {
         match command {
             System(
-                Quit
-                    | Resize(_)
-                    | Search
-                    | Save
-                    | Replace
-                    | ToggleSidebar
-                    | FocusSidebar
-                    | FocusView
-                    | CreateFile
-                    | CreateFolder
-                    | ToggleTerminal
-                    | FocusTerminal,
+                Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
+                | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
+                | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
+                | ExpandVariable | CollapseVariable,
             )
             | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
@@ -540,7 +1742,11 @@ impl Editor {
             }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
+                | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
+                | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
+                | ExpandVariable | CollapseVariable,
             )
             | Move(_) => {}
         }
@@ -567,7 +1773,11 @@ impl Editor {
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
+                | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
+                | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
+                | ExpandVariable | CollapseVariable,
             )
             | Move(_) => {}
         }
@@ -637,7 +1847,11 @@ impl Editor {
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
-                    | FocusView | CreateFile | CreateFolder | ToggleTerminal | FocusTerminal,
+                | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
+                | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
+                | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
+                | ExpandVariable | CollapseVariable,
             )
             | Move(_) => {}
         }
@@ -782,11 +1996,17 @@ impl Editor {
             || self.status_bar.needs_redraw()
             || self.message_bar.needs_redraw()
             || self.command_bar.needs_redraw()
+            || self.debug_panel.needs_redraw()
             || (self.terminal_visible && self.terminal_pane.needs_redraw())
     }
 
     pub fn refresh_status(&mut self) {
-        let status = self.view.get_status();
+        let mut status = self.view.get_status();
+        status.debug_state_label = if self.debug_state.active {
+            Some(if self.debug_paused { "PAUSED" } else { "RUNNING" }.to_string())
+        } else {
+            None
+        };
         let title = format!("{} - {NAME}", status.file_name);
         self.status_bar.update_status(status);
 
@@ -802,7 +2022,16 @@ impl Editor {
         } else {
             0
         };
-        let main_height = size.height.saturating_sub(2).saturating_sub(term_rows);
+        let debug_rows = if self.debug_state.active {
+            self.debug_panel.rows
+        } else {
+            0
+        };
+        let main_height = size
+            .height
+            .saturating_sub(2)
+            .saturating_sub(term_rows)
+            .saturating_sub(debug_rows);
         let sidebar_w = if self.sidebar_visible {
             FileTree::WIDTH
         } else {
@@ -816,9 +2045,14 @@ impl Editor {
             width: right_width,
         });
         self.sidebar.resize(Size {
-            height: main_height + term_rows,
+            height: main_height + term_rows + debug_rows,
             width: FileTree::WIDTH,
         });
+        self.debug_panel.resize(Size {
+            height: debug_rows,
+            width: right_width,
+        });
+        self.debug_panel.set_col_offset(sidebar_w);
         self.terminal_pane.size = Size {
             height: term_rows,
             width: right_width,
@@ -836,10 +2070,24 @@ impl Editor {
         self.command_bar.resize(bar_size);
     }
 
+    fn sync_view_breakpoints(&mut self) {
+        if let Some(path) = self.active_file_path() {
+            let lines = self
+                .breakpoints
+                .get(&path)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            self.view.set_breakpoint_lines(lines);
+        } else {
+            self.view.set_breakpoint_lines(&[]);
+        }
+    }
+
     fn refresh_screen(&mut self) {
         if self.terminal_size.height == 0 || self.terminal_size.width == 0 {
             return;
         }
+        self.sync_view_breakpoints();
         let _ = Terminal::begin_synchronized_update();
         let bottom_bar_row = self.terminal_size.height.saturating_sub(1);
         let _ = Terminal::hide_caret();
@@ -857,10 +2105,24 @@ impl Editor {
         } else {
             0
         };
-        let main_height = self.terminal_size.height.saturating_sub(2).saturating_sub(term_rows);
+        let debug_rows = if self.debug_state.active {
+            self.debug_panel.rows
+        } else {
+            0
+        };
+        let main_height = self
+            .terminal_size
+            .height
+            .saturating_sub(2)
+            .saturating_sub(term_rows)
+            .saturating_sub(debug_rows);
         if main_height > 0 {
             if self.sidebar_visible {
-                self.sidebar.render(0);
+                if self.sidebar_mode == SidebarMode::Explorer {
+                    self.sidebar.render(0);
+                } else {
+                    self.render_debugger_sidebar(main_height + term_rows + debug_rows);
+                }
             }
             self.view.render(0);
         }
@@ -869,8 +2131,11 @@ impl Editor {
         } else {
             0
         };
+        if self.debug_state.active && debug_rows > 0 {
+            self.debug_panel.render(main_height);
+        }
         if self.terminal_visible {
-            let term_origin = main_height;
+            let term_origin = main_height + debug_rows;
             if self.terminal_pane.needs_redraw() {
                 let _ = self.terminal_pane.draw(term_origin, sidebar_w);
             }
@@ -882,9 +2147,14 @@ impl Editor {
                 col: self.command_bar.caret_position_col(),
             }
         } else if self.sidebar_visible && self.sidebar_focus {
-            self.sidebar.caret_position(0)
+            if self.sidebar_mode == SidebarMode::Explorer {
+                self.sidebar.caret_position(0)
+            } else {
+                Position { row: 0, col: 0 }
+            }
         } else if self.terminal_focus && self.terminal_visible {
-            self.terminal_pane.cursor_position(main_height, sidebar_w)
+            self.terminal_pane
+                .cursor_position(main_height + debug_rows, sidebar_w)
         } else {
             self.view.caret_position()
         };
@@ -901,13 +2171,68 @@ impl Editor {
     fn update_message(&mut self, new_message: &str) {
         self.message_bar.update_message(new_message);
     }
+
+    fn render_debugger_sidebar(&mut self, total_height: usize) {
+        let mut lines = Vec::new();
+        lines.push(" Debugger".to_string());
+        lines.push(format!(
+            " Status: {}",
+            if self.debug_state.active {
+                "active"
+            } else {
+                "inactive"
+            }
+        ));
+        lines.push(format!(
+            " Thread: {}",
+            self.debug_state
+                .current_thread_id
+                .map_or_else(|| "-".to_string(), |id| id.to_string())
+        ));
+        lines.push(format!(" Frames: {}", self.debug_state.stack_frames.len()));
+        lines.push(format!(" Vars: {}", self.debug_state.variables.len()));
+        if let Some(frame) = self.debug_state.stack_frames.first() {
+            lines.push(" --- top frame ---".to_string());
+            lines.push(format!(" {}", frame.name));
+            lines.push(format!(" {}:{}", frame.source_path, frame.line));
+        }
+
+        // `Terminal::print_row` clears to end-of-line and wipes the editor; match `FileTree::draw`
+        // (move + print only the sidebar width).
+        for row in 0..total_height {
+            let text = lines.get(row).map_or("", String::as_str);
+            let line = format_sidebar_column_line(text);
+            let _ = Terminal::move_caret_to(Position { row, col: 0 });
+            let _ = Terminal::print(&line);
+        }
+    }
 }
 
 impl Drop for Editor {
     fn drop(&mut self) {
+        self.stop_debug();
         self.terminal_pane.stop();
         let _ = Terminal::terminate();
     }
+}
+
+/// One row in the file-tree width (23 + `│`), same footprint as `FileTree`, without erasing the rest
+/// of the screen row.
+fn format_sidebar_column_line(text: &str) -> String {
+    const CW: usize = FileTree::WIDTH - 1;
+    let body = if text.is_empty() {
+        " ".repeat(CW)
+    } else {
+        let n = text.chars().count();
+        if n > CW {
+            let take = CW.saturating_sub(1);
+            let prefix: String = text.chars().take(take).collect();
+            format!("{prefix}…")
+        } else {
+            format!("{text}{}", " ".repeat(CW - n))
+        }
+    };
+    format!("{body}│")
 }
 
 fn key_event_to_bytes(code: crossterm::event::KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
