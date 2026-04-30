@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            asset_name: den-linux-x86_64
+            artifact_path: target/release/den
+          - name: macos-aarch64
+            os: macos-latest
+            asset_name: den-macos-aarch64
+            artifact_path: target/release/den
+          - name: windows-x86_64
+            os: windows-latest
+            asset_name: den-windows-x86_64.exe
+            artifact_path: target/release/den.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Prepare artifact (Unix)
+        if: runner.os != 'Windows'
+        run: cp "${{ matrix.artifact_path }}" "${{ matrix.asset_name }}"
+
+      - name: Prepare artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item "${{ matrix.artifact_path }}" "${{ matrix.asset_name }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}
+
+  release:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release
+          cp dist/den-linux-x86_64/den-linux-x86_64 release/
+          cp dist/den-macos-aarch64/den-macos-aarch64 release/
+          cp dist/den-windows-x86_64.exe/den-windows-x86_64.exe release/
+
+      - name: Generate checksums
+        working-directory: release
+        run: sha256sum den-linux-x86_64 den-macos-aarch64 den-windows-x86_64.exe > sha256sums.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/den-linux-x86_64
+            release/den-macos-aarch64
+            release/den-windows-x86_64.exe
+            release/sha256sums.txt

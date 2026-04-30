@@ -13,17 +13,18 @@ Rust で実装された TUI テキストエディタです。
 
 ## インストール
 
-必要: [Rust ツールチェーン](https://rustup.rs/)（`cargo`）
+ワンライナー（latest 固定・チェックサム検証あり）:
 
 ```bash
 # Linux / macOS
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/K16858/redit/main/install.sh | bash
 
 # Windows (PowerShell)
-.\install.ps1
+irm https://raw.githubusercontent.com/K16858/redit/main/install.ps1 | iex
 ```
 
-手動ビルド:
+初回リリースは `v1.0.0` を想定しています。  
+ローカルビルドしたい場合:
 
 ```bash
 cargo build --release
