@@ -108,7 +108,7 @@ pub struct Editor {
 }
 
 impl Editor {
-    pub fn new() -> Result<Self, Error> {
+    pub fn new(path_arg: Option<String>) -> Result<Self, Error> {
         let current_hook = take_hook();
         set_hook(Box::new(move |panic_info| {
             let _ = Terminal::terminate();
@@ -121,9 +121,8 @@ impl Editor {
         let mut load_path: Option<PathBuf> = None;
         let mut sidebar_visible = false;
         let mut sidebar_focus = false;
-        let args: Vec<String> = env::args().collect();
 
-        if let Some(arg) = args.get(1) {
+        if let Some(arg) = path_arg.as_deref() {
             let p = PathBuf::from(arg);
             if p.exists() {
                 if p.is_dir() {
@@ -185,7 +184,7 @@ impl Editor {
             if editor.view.load(&s).is_err() {
                 editor.update_message(&format!("ERROR: Could not open file: {s}"));
             }
-        } else if let Some(arg) = args.get(1) {
+        } else if let Some(arg) = path_arg.as_deref() {
             let p = PathBuf::from(arg);
             if !p.exists() {
                 editor.update_message(&format!("ERROR: Path does not exist: {arg}"));
@@ -222,7 +221,14 @@ impl Editor {
             self.poll_debug_events();
             let mut status = self.view.get_status();
             status.debug_state_label = if self.debug_state.active {
-                Some(if self.debug_paused { "PAUSED" } else { "RUNNING" }.to_string())
+                Some(
+                    if self.debug_paused {
+                        "PAUSED"
+                    } else {
+                        "RUNNING"
+                    }
+                    .to_string(),
+                )
             } else {
                 None
             };
@@ -633,10 +639,7 @@ impl Editor {
                 self.debug_paused = false;
                 self.pending_launch_arguments = Some(launch_args);
                 self.debug_panel.update(&self.debug_state);
-                self.update_message(&format!(
-                    "Debug initializing: {}",
-                    adapter.display_name
-                ));
+                self.update_message(&format!("Debug initializing: {}", adapter.display_name));
             }
             Err(e) => {
                 self.update_message(&format!("Debug start error: {e}"));
@@ -705,10 +708,9 @@ impl Editor {
                                 .get("reason")
                                 .and_then(serde_json::Value::as_str)
                                 .unwrap_or("");
-                            let is_dlv = self
-                                .active_debug_adapter
-                                .as_ref()
-                                .is_some_and(|a| a.dap_adapter_type.eq_ignore_ascii_case("dlv-dap"));
+                            let is_dlv = self.active_debug_adapter.as_ref().is_some_and(|a| {
+                                a.dap_adapter_type.eq_ignore_ascii_case("dlv-dap")
+                            });
                             if is_dlv && reason == "entry" {
                                 // Delve is paused at entry; re-sync breakpoints now and continue.
                                 self.pending_continue_after_entry = false;
@@ -770,12 +772,9 @@ impl Editor {
                             let detail = Self::dap_error_detail(&message, &body);
                             if command == "stackTrace"
                                 && detail.contains("unknown goroutine 1")
-                                && self
-                                    .active_debug_adapter
-                                    .as_ref()
-                                    .is_some_and(|a| {
-                                        a.dap_adapter_type.eq_ignore_ascii_case("dlv-dap")
-                                    })
+                                && self.active_debug_adapter.as_ref().is_some_and(|a| {
+                                    a.dap_adapter_type.eq_ignore_ascii_case("dlv-dap")
+                                })
                             {
                                 self.update_message(
                                     "Delve entry stop produced invalid goroutine. Continuing...",
@@ -789,8 +788,7 @@ impl Editor {
                             {
                                 continue;
                             }
-                            if command == "stackTrace"
-                                && detail.contains("has exited with status")
+                            if command == "stackTrace" && detail.contains("has exited with status")
                             {
                                 stop_message = Some("Debuggee has already exited.".to_string());
                                 should_stop = true;
@@ -1066,7 +1064,8 @@ impl Editor {
                 self.debug_state.variables = vars;
                 if self.debug_state.variables.is_empty() {
                     self.debug_state.selected_variable_idx = 0;
-                } else if self.debug_state.selected_variable_idx >= self.debug_state.variables.len() {
+                } else if self.debug_state.selected_variable_idx >= self.debug_state.variables.len()
+                {
                     self.debug_state.selected_variable_idx =
                         self.debug_state.variables.len().saturating_sub(1);
                 }
@@ -1438,7 +1437,9 @@ impl Editor {
                 self.update_message(&format!("Breakpoint removed at line {line}."));
             }
         } else if added {
-            self.update_message(&format!("Breakpoint set at line {line} (F5 to start debug)."));
+            self.update_message(&format!(
+                "Breakpoint set at line {line} (F5 to start debug)."
+            ));
         } else {
             self.update_message(&format!("Breakpoint removed at line {line}."));
         }
@@ -1522,7 +1523,10 @@ impl Editor {
         if len == 0 {
             return;
         }
-        let current = self.debug_state.selected_thread_idx.min(len.saturating_sub(1)) as isize;
+        let current = self
+            .debug_state
+            .selected_thread_idx
+            .min(len.saturating_sub(1)) as isize;
         let next = (current + delta).rem_euclid(len as isize) as usize;
         self.debug_state.selected_thread_idx = next;
         if let Some(thread) = self.debug_state.threads.get(next) {
@@ -1544,14 +1548,21 @@ impl Editor {
         if len == 0 {
             return;
         }
-        let current = self.debug_state.selected_frame_idx.min(len.saturating_sub(1)) as isize;
+        let current = self
+            .debug_state
+            .selected_frame_idx
+            .min(len.saturating_sub(1)) as isize;
         let next = (current + delta).rem_euclid(len as isize) as usize;
         self.debug_state.selected_frame_idx = next;
         if let Some(frame) = self.debug_state.stack_frames.get(next).cloned() {
             if frame.id != 0 {
                 self.request_scopes(frame.id);
             }
-            if self.view.file_path().is_some_and(|path| Self::dap_source_path_string(&path) == frame.source_path) {
+            if self
+                .view
+                .file_path()
+                .is_some_and(|path| Self::dap_source_path_string(&path) == frame.source_path)
+            {
                 self.view.set_debug_stop_line(Some(frame.line));
             } else {
                 self.view.set_debug_stop_line(None);
@@ -1681,8 +1692,8 @@ impl Editor {
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
                 | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
-                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
-                | ExpandVariable | CollapseVariable,
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable | ExpandVariable
+                | CollapseVariable,
             )
             | Move(_) => {}
         }
@@ -1695,8 +1706,8 @@ impl Editor {
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
                 | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
-                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
-                | ExpandVariable | CollapseVariable,
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable | ExpandVariable
+                | CollapseVariable,
             )
             | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
@@ -1745,8 +1756,8 @@ impl Editor {
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
                 | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
-                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
-                | ExpandVariable | CollapseVariable,
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable | ExpandVariable
+                | CollapseVariable,
             )
             | Move(_) => {}
         }
@@ -1776,8 +1787,8 @@ impl Editor {
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
                 | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
-                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
-                | ExpandVariable | CollapseVariable,
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable | ExpandVariable
+                | CollapseVariable,
             )
             | Move(_) => {}
         }
@@ -1850,8 +1861,8 @@ impl Editor {
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
                 | FocusTerminal | StartDebug | StopDebug | ToggleBreakpoint | StepOver | StepInto
                 | StepOut | Continue | Pause | RestartDebug | DisconnectDebug | NextThread
-                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable
-                | ExpandVariable | CollapseVariable,
+                | PrevThread | NextFrame | PrevFrame | NextVariable | PrevVariable | ExpandVariable
+                | CollapseVariable,
             )
             | Move(_) => {}
         }
@@ -2003,7 +2014,14 @@ impl Editor {
     pub fn refresh_status(&mut self) {
         let mut status = self.view.get_status();
         status.debug_state_label = if self.debug_state.active {
-            Some(if self.debug_paused { "PAUSED" } else { "RUNNING" }.to_string())
+            Some(
+                if self.debug_paused {
+                    "PAUSED"
+                } else {
+                    "RUNNING"
+                }
+                .to_string(),
+            )
         } else {
             None
         };
