@@ -2,7 +2,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$Repo = "K16858/redit"
+$Repo = "K16858/den-editor"
 $BinaryName = "den"
 $AssetName = "den-windows-x86_64.exe"
 $InstallDir = Join-Path $env:USERPROFILE ".local\bin"
