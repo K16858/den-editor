@@ -108,7 +108,7 @@ pub struct Editor {
 }
 
 impl Editor {
-    pub fn new(path_arg: Option<String>) -> Result<Self, Error> {
+    pub fn new(path_arg: Option<&str>) -> Result<Self, Error> {
         let current_hook = take_hook();
         set_hook(Box::new(move |panic_info| {
             let _ = Terminal::terminate();
@@ -122,7 +122,7 @@ impl Editor {
         let mut sidebar_visible = false;
         let mut sidebar_focus = false;
 
-        if let Some(arg) = path_arg.as_deref() {
+        if let Some(arg) = path_arg {
             let p = PathBuf::from(arg);
             if p.exists() {
                 if p.is_dir() {
@@ -184,7 +184,7 @@ impl Editor {
             if editor.view.load(&s).is_err() {
                 editor.update_message(&format!("ERROR: Could not open file: {s}"));
             }
-        } else if let Some(arg) = path_arg.as_deref() {
+        } else if let Some(arg) = path_arg {
             let p = PathBuf::from(arg);
             if !p.exists() {
                 editor.update_message(&format!("ERROR: Path does not exist: {arg}"));

@@ -12,7 +12,7 @@ fn main() {
             eprintln!("Unknown option: {arg}");
             std::process::exit(1);
         }
-        [path] => run_editor(Some(path.clone())),
+        [path] => run_editor(Some(path)),
         _ => {
             eprintln!("Too many arguments");
             std::process::exit(1);
@@ -20,7 +20,7 @@ fn main() {
     }
 }
 
-fn run_editor(path: Option<String>) {
+fn run_editor(path: Option<&str>) {
     match Editor::new(path) {
         Ok(mut editor) => editor.run(),
         Err(err) => {
