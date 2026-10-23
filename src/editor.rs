@@ -46,6 +46,17 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const QUIT_TIMES: u8 = 2;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DiscardKind {
+    Open,
+    Debug,
+}
+
+struct PendingDiscard {
+    path: String,
+    kind: DiscardKind,
+}
+
 #[derive(Eq, PartialEq, Default)]
 enum PromptType {
     Search,
@@ -105,6 +116,7 @@ pub struct Editor {
     debug_paused: bool,
     current_variables_reference: Option<i64>,
     variables_reference_stack: Vec<i64>,
+    pending_discard: Option<PendingDiscard>,
 }
 
 impl Editor {
@@ -174,6 +186,7 @@ impl Editor {
             debug_paused: false,
             current_variables_reference: None,
             variables_reference_stack: Vec::new(),
+            pending_discard: None,
         };
 
         let size = Terminal::size().unwrap_or_default();
@@ -319,6 +332,9 @@ impl Editor {
     }
 
     fn process_command(&mut self, command: Command) {
+        if !self.keeps_discard_arm(&command) && self.pending_discard.take().is_some() {
+            self.update_message("");
+        }
         if let System(Resize(size)) = command {
             self.resize(size);
             return;
@@ -560,14 +576,49 @@ impl Editor {
         }
     }
 
-    /// Replaces the buffer only when it has no unsaved edits.
+    fn keeps_discard_arm(&self, command: &Command) -> bool {
+        match (&self.prompt_type, command) {
+            (PromptType::None, Edit(InsertNewline))
+                if self.sidebar_visible
+                    && self.sidebar_focus
+                    && self.sidebar_mode == SidebarMode::Explorer =>
+            {
+                true
+            }
+            (PromptType::CreateFile, Edit(InsertNewline)) => true,
+            (PromptType::None, System(NextFrame | PrevFrame)) => true,
+            _ => false,
+        }
+    }
+
+    /// True when the buffer is clean, or this path was already armed for `kind`.
+    fn discard_confirmed(&mut self, path: &str, kind: DiscardKind) -> bool {
+        if !self.view.get_status().is_modified {
+            self.pending_discard = None;
+            return true;
+        }
+        self.pending_discard
+            .as_ref()
+            .is_some_and(|pending| pending.path == path && pending.kind == kind)
+    }
+
+    fn arm_discard(&mut self, path: &str, kind: DiscardKind) {
+        self.pending_discard = Some(PendingDiscard {
+            path: path.to_string(),
+            kind,
+        });
+        self.update_message("Unsaved changes. Repeat to discard and open.");
+    }
+
+    /// Replaces the buffer when it is clean, or when this open is the confirming repeat.
     fn load_if_clean(&mut self, path: &str) -> bool {
-        if self.view.get_status().is_modified {
-            self.update_message("Unsaved changes. Save the file before opening another.");
+        if !self.discard_confirmed(path, DiscardKind::Open) {
+            self.arm_discard(path, DiscardKind::Open);
             return false;
         }
         match self.view.load(path) {
             Ok(()) => {
+                self.pending_discard = None;
                 self.refresh_status();
                 self.update_message("");
                 true
@@ -1281,12 +1332,13 @@ impl Editor {
             self.view.set_debug_stop_line(Some(line));
             return true;
         }
-        if self.view.get_status().is_modified {
+        if !self.discard_confirmed(source_path, DiscardKind::Debug) {
             self.view.set_debug_stop_line(None);
-            self.update_message("Paused in another file. Save the current file to open it.");
+            self.arm_discard(source_path, DiscardKind::Debug);
             return false;
         }
         if self.view.load(source_path).is_ok() {
+            self.pending_discard = None;
             self.view.set_debug_stop_line(Some(line));
             self.refresh_status();
             true
@@ -1624,16 +1676,26 @@ impl Editor {
         let current = self
             .debug_state
             .selected_frame_idx
-            .min(len.saturating_sub(1)) as isize;
-        let next = (current + delta).rem_euclid(len as isize) as usize;
-        self.debug_state.selected_frame_idx = next;
-        if let Some(frame) = self.debug_state.stack_frames.get(next).cloned() {
+            .min(len.saturating_sub(1));
+        if let Some(frame) = self.debug_state.stack_frames.get(current).cloned()
+            && self.discard_confirmed(&frame.source_path, DiscardKind::Debug)
+            && self.view.get_status().is_modified
+        {
+            if self.show_debug_location(&frame.source_path, frame.line) {
+                self.update_message(&format!("Selected frame #{current}: {}", frame.name));
+            }
+            return;
+        }
+        let next = (current as isize + delta).rem_euclid(len as isize) as usize;
+        let Some(frame) = self.debug_state.stack_frames.get(next).cloned() else {
+            return;
+        };
+        if self.show_debug_location(&frame.source_path, frame.line) {
+            self.debug_state.selected_frame_idx = next;
             if frame.id != 0 {
                 self.request_scopes(frame.id);
             }
-            if self.show_debug_location(&frame.source_path, frame.line) {
-                self.update_message(&format!("Selected frame #{next}: {}", frame.name));
-            }
+            self.update_message(&format!("Selected frame #{next}: {}", frame.name));
         }
     }
 
@@ -1889,8 +1951,8 @@ impl Editor {
             }
             Edit(InsertNewline) => {
                 let name = self.command_bar.value();
-                self.set_prompt(PromptType::None);
                 if name.is_empty() {
+                    self.set_prompt(PromptType::None);
                     self.update_message("Name is empty.");
                     return;
                 }
@@ -1898,11 +1960,13 @@ impl Editor {
                 let target = match self.resolve_workspace_target(&base, &name) {
                     Ok(path) => path,
                     Err(msg) => {
+                        self.set_prompt(PromptType::None);
                         self.update_message(&msg);
                         return;
                     }
                 };
                 if is_dir {
+                    self.set_prompt(PromptType::None);
                     match std::fs::create_dir_all(&target) {
                         Ok(()) => {
                             self.update_message(&format!("Created: {name}"));
@@ -1914,9 +1978,15 @@ impl Editor {
                         Err(e) => self.update_message(&format!("Error: {e}")),
                     }
                 } else {
+                    let path_str = target.to_string_lossy().to_string();
+                    if !self.discard_confirmed(&path_str, DiscardKind::Open) {
+                        self.arm_discard(&path_str, DiscardKind::Open);
+                        return;
+                    }
                     if let Some(parent) = target.parent()
                         && let Err(e) = std::fs::create_dir_all(parent)
                     {
+                        self.set_prompt(PromptType::None);
                         self.update_message(&format!("Error: {e}"));
                         return;
                     }
@@ -1926,18 +1996,21 @@ impl Editor {
                         .open(&target)
                     {
                         Ok(_) => {
+                            self.pending_discard = None;
+                            self.set_prompt(PromptType::None);
                             if let Err(e) = self.sidebar.rebuild() {
                                 self.update_message(&format!("File tree error: {e}"));
                             }
                             self.sidebar.mark_redraw(true);
-                            let path_str = target.to_string_lossy().to_string();
-                            if self.view.get_status().is_modified {
-                                self.update_message(&format!(
-                                    "Created {name}, but the current file has unsaved changes."
-                                ));
-                            } else if self.load_if_clean(&path_str) {
-                                self.update_message(&format!("Created: {name}"));
-                                self.status_bar.mark_redraw(true);
+                            match self.view.load(&path_str) {
+                                Ok(()) => {
+                                    self.refresh_status();
+                                    self.update_message(&format!("Created: {name}"));
+                                    self.status_bar.mark_redraw(true);
+                                }
+                                Err(e) => {
+                                    self.update_message(&format!("ERROR: Could not open file: {e}"));
+                                }
                             }
                         }
                         Err(e) => self.update_message(&format!("Error: {e}")),
