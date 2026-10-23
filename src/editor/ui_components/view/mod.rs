@@ -1292,7 +1292,6 @@ impl View {
 
     /// Replaces all occurrences of `query` with `replacement`.
     /// Returns the number of replacements made.
-    /// Note: this operation is not recorded in the undo history.
     pub fn replace_all(&mut self, query: &str, replacement: &str) -> usize {
         if query.is_empty() {
             return 0;
@@ -1303,11 +1302,22 @@ impl View {
             return 0;
         }
         self.undo_history.clear_redo();
-        // Replace from end to start to preserve indices of earlier matches.
+        let mut ops = Vec::new();
         for &at in matches.iter().rev() {
             self.buffer.delete_span(at, query);
-            self.buffer.insert_string(at, replacement);
+            let cursor_after = self.buffer.insert_string(at, replacement);
+            ops.push(EditOp::Delete {
+                at,
+                text: query.to_string(),
+            });
+            ops.push(EditOp::Insert {
+                at,
+                text: replacement.to_string(),
+                cursor_after,
+            });
         }
+        self.undo_history.push_edit(EditOp::Group(ops));
+        self.buffer.sync_modified_to_saved();
         self.cache_version += 1;
         self.mark_redraw(true);
         count
@@ -1469,5 +1479,15 @@ mod tests {
         assert_eq!(&*view.buffer.lines[0], "()");
         view.undo();
         assert_eq!(&*view.buffer.lines[0], "");
+    }
+
+    #[test]
+    fn replace_all_undoes_as_one_step() {
+        let mut view = View::default();
+        view.paste_text("a a");
+        assert_eq!(view.replace_all("a", "b"), 2);
+        assert_eq!(&*view.buffer.lines[0], "b b");
+        view.undo();
+        assert_eq!(&*view.buffer.lines[0], "a a");
     }
 }
