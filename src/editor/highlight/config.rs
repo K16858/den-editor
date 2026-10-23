@@ -1,87 +1,31 @@
 #[derive(Clone)]
-pub struct BracketConfig {
-    pub open: char,
-    pub close: char,
-    pub color_offset: usize,
-}
-
-#[derive(Clone)]
 pub struct LanguageConfig {
     pub keywords: Vec<String>,
     pub primitive_types: Vec<String>,
     pub line_comment_start: String,
     pub block_comment_start: String,
     pub block_comment_end: String,
-    pub brackets: Vec<BracketConfig>,
     pub line_prefix_keyword_markers: Vec<String>,
     pub line_prefix_comment_markers: Vec<String>,
     pub full_line_comment_prefixes: Vec<String>,
     pub highlight_capitalized_type_names: bool,
 }
 
-pub fn default_rust_config() -> LanguageConfig {
-    #[cfg(debug_assertions)]
-    {
-        // Debug build: try to load from docs/examples/default/languages/rust.toml
-        use std::path::Path;
-        if let Ok(lang_config) = load_language_config(
-            "rust",
-            Some(Path::new("docs/examples/default/languages/rust.toml")),
-        ) {
-            return merge_config(&hardcoded_rust_config(), Some(&lang_config));
-        }
-    }
-
-    // Release build or fallback: use hardcoded values
-    hardcoded_rust_config()
+pub fn embedded_rust_config() -> LanguageConfig {
+    let file: LanguageConfigFile = toml::from_str(include_str!(
+        "../../../docs/examples/default/languages/rust.toml"
+    ))
+    .expect("embedded rust.toml");
+    merge_config(&blank_language_config(), Some(&file))
 }
 
-fn hardcoded_rust_config() -> LanguageConfig {
+fn blank_language_config() -> LanguageConfig {
     LanguageConfig {
-        keywords: vec![
-            "fn".to_string(),
-            "let".to_string(),
-            "mut".to_string(),
-            "if".to_string(),
-            "else".to_string(),
-            "for".to_string(),
-            "while".to_string(),
-            "match".to_string(),
-        ],
-        primitive_types: vec![
-            "i8".to_string(),
-            "i16".to_string(),
-            "i32".to_string(),
-            "i64".to_string(),
-            "i128".to_string(),
-            "u8".to_string(),
-            "u16".to_string(),
-            "u32".to_string(),
-            "u64".to_string(),
-            "u128".to_string(),
-            "f32".to_string(),
-            "f64".to_string(),
-        ],
+        keywords: vec![],
+        primitive_types: vec![],
         line_comment_start: "//".to_string(),
         block_comment_start: "/*".to_string(),
         block_comment_end: "*/".to_string(),
-        brackets: vec![
-            BracketConfig {
-                open: '(',
-                close: ')',
-                color_offset: 0,
-            },
-            BracketConfig {
-                open: '{',
-                close: '}',
-                color_offset: 1,
-            },
-            BracketConfig {
-                open: '[',
-                close: ']',
-                color_offset: 2,
-            },
-        ],
         line_prefix_keyword_markers: vec![],
         line_prefix_comment_markers: vec![],
         full_line_comment_prefixes: vec![],
@@ -89,10 +33,7 @@ fn hardcoded_rust_config() -> LanguageConfig {
     }
 }
 
-use crate::editor::highlight::config_file::{BracketConfigFile, LanguageConfigFile};
-
-#[cfg(debug_assertions)]
-use crate::editor::highlight::config_file::load_language_config;
+use crate::editor::highlight::config_file::LanguageConfigFile;
 
 pub fn merge_config(
     default: &LanguageConfig,
@@ -123,7 +64,6 @@ pub fn merge_config(
             .block_comment_end
             .clone()
             .unwrap_or_else(|| default.block_comment_end.clone()),
-        brackets: merge_brackets(&default.brackets, file_config.brackets.as_ref()),
         line_prefix_keyword_markers: file_config
             .line_prefix_keyword_markers
             .clone()
@@ -140,22 +80,4 @@ pub fn merge_config(
             .highlight_capitalized_type_names
             .unwrap_or(default.highlight_capitalized_type_names),
     }
-}
-
-fn merge_brackets(
-    default: &[BracketConfig],
-    file_brackets: Option<&Vec<BracketConfigFile>>,
-) -> Vec<BracketConfig> {
-    let Some(file_brackets) = file_brackets else {
-        return default.to_vec();
-    };
-
-    file_brackets
-        .iter()
-        .map(|b| BracketConfig {
-            open: b.open.chars().next().unwrap_or('('),
-            close: b.close.chars().next().unwrap_or(')'),
-            color_offset: b.color_offset.unwrap_or(0),
-        })
-        .collect()
 }
