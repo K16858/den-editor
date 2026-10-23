@@ -17,10 +17,10 @@ Rust で実装された TUI テキストエディタです。
 
 ```bash
 # Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/K16858/redit/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/K16858/den-editor/main/install.sh | bash
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/K16858/redit/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/K16858/den-editor/main/install.ps1 | iex
 ```
 
 初回リリースは `v1.0.0` を想定しています。  
