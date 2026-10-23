@@ -787,9 +787,9 @@ impl View {
     }
 
     fn cut_selection(&mut self) -> Result<(), &'static str> {
-        let result = self.copy_selection();
+        self.copy_selection()?;
         let _ = self.delete_selection();
-        result
+        Ok(())
     }
 
     /// Inserts the given text at the current cursor (or replaces selection).
