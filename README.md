@@ -4,29 +4,35 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/den-icon-dark.svg">
-  <img alt="Den アイコン" src="docs/assets/den-icon.svg" width="83" height="100">
+  <img alt="Den icon" src="docs/assets/den-icon.svg" width="83" height="100">
 </picture>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/den-logo-dark.svg">
-  <img alt="Den ロゴ" src="docs/assets/den-logo.svg" width="200" height="100">
+  <img alt="Den logo" src="docs/assets/den-logo.svg" width="200" height="100">
 </picture>
+
+<br>
+
+<a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue" style="display: inline-block"></a>
+&nbsp;
+<a href="https://github.com/K16858/den-editor/releases"><img alt="Release" src="https://img.shields.io/github/v/release/K16858/den-editor" style="display: inline-block"></a>
 
 </div>
 
-Rust で実装された TUI テキストエディタです。  
-編集、ファイルツリー、統合ターミナル、デバッガを1画面で扱えます。
+Den is a text editor for the terminal, written in Rust.
+Editing, a file tree, a shell, and a debugger share one screen.
 
-## 機能
+## Features
 
-- 検索 / 置換、Undo、保存
-- サイドバーでファイル操作（新規ファイル・フォルダ作成）
-- 言語別シンタックスハイライト（TOML 設定）
-- 統合ターミナル（PTY）
-- デバッグ（debugpy / CodeLLDB / dlv の設定例付き）
+- Search, replace, undo, and save
+- Create files and folders from the sidebar
+- Syntax highlighting driven by TOML. Rust, Python, Go, JavaScript, C, and Markdown are included
+- Integrated terminal
+- Debugging for Python (debugpy), Rust (CodeLLDB), and Go (Delve). Other adapters can be added in TOML
 
-## インストール
+## Install
 
-ワンライナー（latest 固定・チェックサム検証あり）:
+The installers download the latest release and check its checksum.
 
 ```bash
 # Linux / macOS
@@ -36,52 +42,54 @@ curl -fsSL https://raw.githubusercontent.com/K16858/den-editor/main/install.sh |
 irm https://raw.githubusercontent.com/K16858/den-editor/main/install.ps1 | iex
 ```
 
-初回リリースは `v1.0.0` を想定しています。  
-ローカルビルドしたい場合:
+Or build it yourself:
 
 ```bash
 cargo build --release
 ```
 
-## 起動
+## Usage
 
 ```text
 den [path]
-```
-
-- 引数なし: カレントディレクトリで起動
-- ディレクトリ指定: そのディレクトリをワークスペースとして起動
-- ファイル指定: そのファイルを開いて起動
-
-### CLI オプション
-
-```text
 den --version
-den -V
 ```
 
-- バージョンを表示して終了
+With no path, Den opens the current directory. A directory becomes the workspace. A file is opened directly. `--version` and `-V` print the version and exit.
 
-## 設定ファイル
+## Configuration
+
+Den starts with built-in defaults. Put overrides here:
 
 - Linux / macOS: `~/.config/den/`
 - Windows: `%APPDATA%\den\`
-- 例: `docs/examples/config.toml`
 
-## キーバインド（主要）
+| File                    | Purpose                          |
+| ----------------------- | -------------------------------- |
+| `colors.toml`           | Theme colors                     |
+| `languages/<name>.toml` | Highlighting and file extensions |
+| `debuggers/<name>.toml` | A debug adapter                  |
 
-| 操作                       | キー                                     |
-| -------------------------- | ---------------------------------------- |
-| 終了（未保存時は確認あり） | Ctrl+Q                                   |
-| 保存                       | Ctrl+S                                   |
-| 検索 / 置換                | Ctrl+F / Ctrl+H                          |
-| サイドバー切替             | Ctrl+B                                   |
-| フォーカス切替             | Ctrl+1（エディタ）/ Ctrl+2（ターミナル） |
-| ターミナル表示切替         | Ctrl+@                                   |
-| 新規ファイル / フォルダ    | Ctrl+N / Ctrl+Shift+N                    |
-| 取消                       | Esc                                      |
-| デバッグ開始 / 停止        | F5 / Shift+F5                            |
-| ブレークポイント           | F9                                       |
-| ステップ                   | F10（Over）/ F11（In）/ Shift+F11（Out） |
-| 一時停止 / 再起動          | F6 / Shift+F6                            |
-| 続行                       | Ctrl+R                                   |
+Samples are in `docs/examples/default/`.
+
+## Keys
+
+| Action                  | Key                   |
+| ----------------------- | --------------------- |
+| Quit (asks if unsaved)  | Ctrl+Q                |
+| Save                    | Ctrl+S                |
+| Search / Replace        | Ctrl+F / Ctrl+H       |
+| Toggle sidebar          | Ctrl+B                |
+| Focus editor / terminal | Ctrl+1 / Ctrl+2       |
+| Toggle terminal         | Ctrl+@                |
+| New file / folder       | Ctrl+N / Ctrl+Shift+N |
+| Cancel                  | Esc                   |
+| Start / stop debug      | F5 / Shift+F5         |
+| Breakpoint              | F9                    |
+| Step over / in / out    | F10 / F11 / Shift+F11 |
+| Pause / restart         | F6 / Shift+F6         |
+| Continue                | Ctrl+R                |
+
+## License
+
+[MIT](LICENSE)
