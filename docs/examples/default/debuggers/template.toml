@@ -1,0 +1,69 @@
+# Copy this file to:
+# - Windows: %APPDATA%/den/debuggers/<name>.toml
+# - Linux/macOS: ~/.config/den/debuggers/<name>.toml
+#
+# Then edit values for your adapter.
+
+id = "my-adapter"
+display_name = "My Adapter"
+command = "my-dap-adapter"
+args = []
+file_extensions = ["txt"]
+
+# DAP "type" used in initialize.adapterID and launch.type by default.
+dap_adapter_type = "my-adapter"
+
+# Optional transport mode:
+# - "" (default): stdio
+# - "tcp-server-dials-client": adapter connects to the client address we provide
+dap_transport = ""
+
+# Used only when dap_transport = "tcp-server-dials-client".
+# Omit this line (rather than repeating the default) to inherit the value
+# from a same-id default config; an explicit value here always wins.
+client_addr_arg = "--client-addr"
+
+# Optional health check command (defaults to `command` when empty).
+health_check_command = ""
+
+# Optional process health check command args.
+# Omit this line to inherit from a same-id default config; an explicit
+# value here always wins. When nothing sets it, ["--version"] is used.
+health_check_args = ["--version"]
+
+# Optional fallback when the primary health check fails.
+# The fallback command launches the adapter. Omit fallback_launch_args to keep `args`.
+health_check_fallback_command = ""
+health_check_fallback_args = []
+# fallback_launch_args = ["-3", "-m", "debugpy.adapter"]
+
+# Optional user-facing install hint when command is not found.
+not_found_hint = ""
+
+# Optional session current directory template.
+# Available placeholders:
+# ${workspace} ${file} ${fileStem} ${moduleRoot} ${targetDebugBinary} ${tmpDir} ${pid}
+# Legacy alias (still supported): ${goLaunchDir}
+session_cwd_template = ""
+
+# Optional stop/error behaviors for adapters with special runtime quirks.
+auto_continue_stop_reasons = []
+# Omit this line to inherit from a same-id default config; an explicit
+# `false` here always wins and is not treated as "unset".
+sync_breakpoints_before_auto_continue = false
+stacktrace_continue_error_patterns = []
+stacktrace_retry_error_patterns = []
+
+# Optional base launch payload (merged into default launch args).
+launch_template = {
+  name = "Debug (My Adapter)",
+  type = "my-adapter",
+  request = "launch",
+  program = "${file}",
+  cwd = "${workspace}"
+}
+
+# Optional final overrides (applied last).
+launch_overrides = {
+  # exampleFlag = true
+}

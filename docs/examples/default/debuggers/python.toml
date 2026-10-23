@@ -4,4 +4,11 @@ command = "python"
 args = ["-m", "debugpy.adapter"]
 file_extensions = ["py"]
 dap_adapter_type = "debugpy"
+health_check_command = "python"
+health_check_args = ["-c", "import debugpy.adapter"]
+health_check_fallback_command = "py"
+health_check_fallback_args = ["-3", "-c", "import debugpy.adapter"]
+fallback_launch_args = ["-3", "-m", "debugpy.adapter"]
+not_found_hint = "Python/debugpy not found. Install: python -m pip install debugpy (or py -3 -m pip install debugpy)"
+launch_template = { name = "Debug current file", type = "python" }
 launch_overrides = { justMyCode = false }
