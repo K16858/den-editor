@@ -11,6 +11,8 @@ pub struct Buffer {
     pub file_info: FileInfo,
     pub modified: bool,
     saved_hash: u64,
+    newline: String,
+    trailing_newline: bool,
 }
 
 impl Default for Buffer {
@@ -20,6 +22,8 @@ impl Default for Buffer {
             file_info: FileInfo::default(),
             modified: false,
             saved_hash: 0,
+            newline: "\n".to_string(),
+            trailing_newline: true,
         };
         buffer.mark_saved();
         buffer
@@ -33,11 +37,19 @@ impl Buffer {
         for value in contents.lines() {
             lines.push(Line::from(value));
         }
+        let newline = if contents.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        let trailing_newline = contents.is_empty() || contents.ends_with('\n');
         let mut buffer = Self {
             lines,
             file_info: FileInfo::from(file_name),
             modified: false,
             saved_hash: 0,
+            newline: newline.to_string(),
+            trailing_newline,
         };
         buffer.mark_saved();
         Ok(buffer)
@@ -62,11 +74,21 @@ impl Buffer {
     }
 
     fn save_to_file(&self, file_info: &FileInfo) -> Result<(), Error> {
-        if let Some(file_path) = &file_info.get_path() {
-            let mut file = File::create(file_path)?;
-            for line in &self.lines {
-                writeln!(file, "{line}")?;
+        let Some(file_path) = file_info.get_path() else {
+            return Ok(());
+        };
+        let mut file = File::create(file_path)?;
+        if self.lines.is_empty() {
+            return Ok(());
+        }
+        for (i, line) in self.lines.iter().enumerate() {
+            if i > 0 {
+                write!(file, "{}", self.newline)?;
             }
+            write!(file, "{line}")?;
+        }
+        if self.trailing_newline {
+            write!(file, "{}", self.newline)?;
         }
         Ok(())
     }
@@ -355,5 +377,25 @@ mod tests {
                 grapheme_idx: 3,
             }
         );
+    }
+
+    #[test]
+    fn save_keeps_newline_style_and_trailing_newline() {
+        let dir = std::env::temp_dir().join(format!("den-nl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lf = dir.join("lf.txt");
+        let crlf = dir.join("crlf.txt");
+        std::fs::write(&lf, "a\nb").unwrap();
+        std::fs::write(&crlf, "a\r\nb\r\n").unwrap();
+
+        let mut loaded = Buffer::load(lf.to_str().unwrap()).unwrap();
+        loaded.save().unwrap();
+        assert_eq!(std::fs::read(&lf).unwrap(), b"a\nb");
+
+        let mut loaded = Buffer::load(crlf.to_str().unwrap()).unwrap();
+        loaded.save().unwrap();
+        assert_eq!(std::fs::read(&crlf).unwrap(), b"a\r\nb\r\n");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
