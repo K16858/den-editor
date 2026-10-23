@@ -28,10 +28,9 @@ use undo::{EditOp, UndoHistory};
 
 type HighlightCache = HashMap<usize, (Vec<HighlightAnnotation>, HighlightState, u64)>;
 
-/// Pairs of opening and closing brackets/quotes for auto-close.
+/// Pairs of opening and closing brackets for auto-close.
 /// TODO: move this to a configuration file so users can customize the pairs.
-const BRACKET_PAIRS: &[(char, char)] =
-    &[('(', ')'), ('[', ']'), ('{', '}'), ('"', '"'), ('\'', '\'')];
+const BRACKET_PAIRS: &[(char, char)] = &[('(', ')'), ('[', ']'), ('{', '}')];
 
 /// Returns the matching closing character for `ch` if it is an opening bracket.
 fn closing_bracket_for(ch: char) -> Option<char> {
@@ -1500,6 +1499,15 @@ mod tests {
         view.undo();
         assert!(!view.get_status().is_modified);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn quote_is_not_auto_closed() {
+        let mut view = View::default();
+        view.handle_edit_command(Edit::Insert('\''));
+        assert_eq!(&*view.buffer.lines[0], "'");
+        view.handle_edit_command(Edit::Insert('"'));
+        assert_eq!(&*view.buffer.lines[0], "'\"");
     }
 
     #[test]
