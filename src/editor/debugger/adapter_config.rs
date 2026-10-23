@@ -28,6 +28,10 @@ pub struct AdapterConfig {
     pub health_check_fallback_command: String,
     #[serde(default)]
     pub health_check_fallback_args: Vec<String>,
+    /// Launch args used when `health_check_fallback_command` starts the adapter.
+    /// `None` keeps `args`.
+    #[serde(default)]
+    pub fallback_launch_args: Option<Vec<String>>,
     #[serde(default)]
     pub not_found_hint: String,
     /// `None` means "not set in this file" (falls back to the default adapter's
@@ -76,6 +80,15 @@ impl AdapterConfig {
         self.health_check_args
             .clone()
             .unwrap_or_else(default_health_check_args)
+    }
+
+    pub fn with_fallback_launch(&self) -> Self {
+        let mut resolved = self.clone();
+        resolved.command = self.health_check_fallback_command.clone();
+        if let Some(args) = &self.fallback_launch_args {
+            resolved.args = args.clone();
+        }
+        resolved
     }
 }
 
@@ -164,6 +177,9 @@ fn merge_missing_fields_from_default(current: &mut AdapterConfig, default_cfg: &
     }
     if current.health_check_fallback_args.is_empty() {
         current.health_check_fallback_args = default_cfg.health_check_fallback_args.clone();
+    }
+    if current.fallback_launch_args.is_none() {
+        current.fallback_launch_args = default_cfg.fallback_launch_args.clone();
     }
     if current.not_found_hint.is_empty() {
         current.not_found_hint = default_cfg.not_found_hint.clone();
@@ -268,6 +284,35 @@ mod tests {
             .unwrap();
         merge_missing_fields_from_default(&mut current, &default_cfg);
         assert_eq!(current.health_check_args(), ["--version"]);
+    }
+
+    #[test]
+    fn fallback_launch_switches_command_and_args() {
+        let adapter = embedded_default_configs()
+            .into_iter()
+            .find(|cfg| cfg.id == "python-debugpy")
+            .unwrap();
+        let resolved = adapter.with_fallback_launch();
+        assert_eq!(resolved.command, "py");
+        assert_eq!(resolved.args, ["-3", "-m", "debugpy.adapter"]);
+        assert_eq!(adapter.command, "python");
+    }
+
+    #[test]
+    fn fallback_launch_keeps_args_when_unset() {
+        let adapter = parse_adapter_config(
+            r#"
+            id = "x"
+            display_name = "X"
+            command = "python"
+            args = ["-m", "debugpy.adapter"]
+            health_check_fallback_command = "py"
+            "#,
+        )
+        .unwrap();
+        let resolved = adapter.with_fallback_launch();
+        assert_eq!(resolved.command, "py");
+        assert_eq!(resolved.args, ["-m", "debugpy.adapter"]);
     }
 }
 

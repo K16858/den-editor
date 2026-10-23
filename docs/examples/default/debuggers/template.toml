@@ -31,9 +31,11 @@ health_check_command = ""
 # value here always wins. When nothing sets it, ["--version"] is used.
 health_check_args = ["--version"]
 
-# Optional fallback health check command/args when primary probe fails.
+# Optional fallback when the primary health check fails.
+# The fallback command launches the adapter. Omit fallback_launch_args to keep `args`.
 health_check_fallback_command = ""
 health_check_fallback_args = []
+# fallback_launch_args = ["-3", "-m", "debugpy.adapter"]
 
 # Optional user-facing install hint when command is not found.
 not_found_hint = ""

@@ -594,10 +594,13 @@ impl Editor {
             self.update_message("No debug adapter for current file.");
             return;
         };
-        if let Err(msg) = Self::ensure_adapter_ready(&adapter) {
-            self.update_message(&msg);
-            return;
-        }
+        let adapter = match Self::ensure_adapter_ready(&adapter) {
+            Ok(adapter) => adapter,
+            Err(msg) => {
+                self.update_message(&msg);
+                return;
+            }
+        };
         let debug_cwd = if adapter.session_cwd_template.is_empty() {
             None
         } else {
@@ -1349,7 +1352,7 @@ impl Editor {
         Ok(args)
     }
 
-    fn ensure_adapter_ready(adapter: &AdapterConfig) -> Result<(), String> {
+    fn ensure_adapter_ready(adapter: &AdapterConfig) -> Result<AdapterConfig, String> {
         let probe_command = if adapter.health_check_command.is_empty() {
             adapter.command.clone()
         } else {
@@ -1367,7 +1370,7 @@ impl Editor {
         let health_check_args = adapter.health_check_args();
         let primary_result = run_probe(&probe_command, &health_check_args);
         if matches!(&primary_result, Ok(status) if status.success()) {
-            return Ok(());
+            return Ok(adapter.clone());
         }
 
         if !adapter.health_check_fallback_command.is_empty()
@@ -1377,7 +1380,7 @@ impl Editor {
             )
             .is_ok_and(|status| status.success())
         {
-            return Ok(());
+            return Ok(adapter.with_fallback_launch());
         }
 
         match primary_result {
