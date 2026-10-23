@@ -161,6 +161,9 @@ impl TerminalPane {
 
             if let Some(buf_row) = self.buffer.row(start + row) {
                 for cell in &buf_row.cells {
+                    if cell.ch == '\0' {
+                        continue;
+                    }
                     if let Some(fg) = cell.fg {
                         out.queue(SetForegroundColor(fg))?;
                     } else {
