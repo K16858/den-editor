@@ -489,8 +489,8 @@ impl View {
 
     fn move_down(&mut self, step: usize) {
         self.text_location.line_idx = self.text_location.line_idx.saturating_add(step);
-        self.snap_to_valid_grapheme();
         self.snap_to_valid_line();
+        self.snap_to_valid_grapheme();
     }
 
     fn move_right(&mut self) {
@@ -501,7 +501,7 @@ impl View {
             .map_or(0, Line::grapheme_count);
         if self.text_location.grapheme_idx < line_width {
             self.text_location.grapheme_idx += 1;
-        } else {
+        } else if self.text_location.line_idx + 1 < self.buffer.height() {
             self.move_to_start_of_line();
             self.move_down(1);
         }
@@ -1431,5 +1431,49 @@ impl UIComponent for View {
         } else {
             self.render_buffer(origin_y)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn movement_at_end_of_document_stays_put() {
+        let mut view = View::default();
+        view.buffer.lines = vec![Line::from("abc"), Line::from("xyz")];
+        view.text_location = Location {
+            line_idx: 1,
+            grapheme_idx: 2,
+        };
+        view.move_down(1);
+        assert_eq!(
+            view.text_location,
+            Location {
+                line_idx: 1,
+                grapheme_idx: 2,
+            }
+        );
+        view.text_location.grapheme_idx = 3;
+        view.move_right();
+        assert_eq!(
+            view.text_location,
+            Location {
+                line_idx: 1,
+                grapheme_idx: 3,
+            }
+        );
+        view.text_location = Location {
+            line_idx: 0,
+            grapheme_idx: 3,
+        };
+        view.move_right();
+        assert_eq!(
+            view.text_location,
+            Location {
+                line_idx: 1,
+                grapheme_idx: 0,
+            }
+        );
     }
 }
