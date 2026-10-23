@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use super::super::terminal::clip_display;
 use super::super::{Size, Terminal};
 use super::UIComponent;
 
@@ -69,11 +70,7 @@ impl UIComponent for MessageBar {
             &self.current_message.text
         };
 
-        let to_print = if message.len() <= self.size.width {
-            format!("{message:width$.width$}", width = self.size.width)
-        } else {
-            String::new()
-        };
+        let to_print = clip_display(message, self.size.width);
         Terminal::print_row(origin, 0, &to_print)
     }
 }

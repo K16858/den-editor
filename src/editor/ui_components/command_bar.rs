@@ -1,5 +1,6 @@
 use std::{cmp::min, io::Error};
 
+use super::super::terminal::clip_display;
 use super::super::{Line, Size, Terminal, command::Edit};
 use super::UIComponent;
 
@@ -61,11 +62,7 @@ impl UIComponent for CommandBar {
             self.prompt,
             self.value.get_visible_graphemes(value_start..value_end)
         );
-        let to_print = if message.len() <= self.size.width {
-            message
-        } else {
-            String::new()
-        };
+        let to_print = clip_display(&message, self.size.width);
         Terminal::print_row(origin, 0, &to_print)
     }
 }

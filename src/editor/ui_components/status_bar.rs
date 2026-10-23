@@ -1,6 +1,18 @@
+use super::super::terminal::{clip_display, clip_display_end};
 use super::super::{DocumentStatus, Size, Terminal};
 use super::UIComponent;
 use std::io::Error;
+use unicode_width::UnicodeWidthStr;
+
+fn status_line(beginning: &str, position: &str, width: usize) -> String {
+    let position_width = position.width();
+    if position_width >= width {
+        return clip_display_end(position, width);
+    }
+    let left = clip_display(beginning, width - position_width);
+    let gap = width.saturating_sub(left.width() + position_width);
+    format!("{left}{}{position}", " ".repeat(gap))
+}
 
 #[derive(Default)]
 pub struct StatusBar {
@@ -50,18 +62,27 @@ impl UIComponent for StatusBar {
             "{}{language_indicator}{debug_indicator} - {line_count} {modified_indicator}",
             self.current_status.file_name
         );
-
-        let position_indicator = self.current_status.position_indicator_to_string();
-        let remainder_len = self.size.width.saturating_sub(beginning.len());
-        let status = format!("{beginning}{position_indicator:>remainder_len$}");
-
-        let to_print = if status.len() <= self.size.width {
-            status
-        } else {
-            String::new()
-        };
+        let to_print = status_line(
+            &beginning,
+            &self.current_status.position_indicator_to_string(),
+            self.size.width,
+        );
         Terminal::print_inverted_row(origin_row, &to_print)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_line;
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn long_name_keeps_the_position() {
+        let line = status_line(&"あ".repeat(40), "12/99", 20);
+        assert_eq!(line.width(), 20);
+        assert!(line.ends_with("12/99"));
+        assert!(!line.is_empty());
     }
 }
