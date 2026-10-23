@@ -111,13 +111,17 @@ impl Buffer {
                 at.line_idx += 1;
                 at.grapheme_idx = 0;
             }
-            let base = at.grapheme_idx;
-            for ch in line_text.chars() {
-                self.insert_char(ch, at);
-                at.grapheme_idx += 1;
+            if line_text.is_empty() {
+                continue;
             }
-            // Correct grapheme_idx for multi-codepoint grapheme clusters.
-            at.grapheme_idx = base + line_text.graphemes(true).count();
+            if at.line_idx == self.height() {
+                self.lines.push(Line::default());
+            }
+            if let Some(line) = self.lines.get_mut(at.line_idx) {
+                line.insert_str(at.grapheme_idx, line_text);
+                self.modified = true;
+            }
+            at.grapheme_idx += line_text.graphemes(true).count();
         }
         at
     }
@@ -302,5 +306,31 @@ impl Buffer {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_string_keeps_multicodepoint_grapheme_together() {
+        let mut buffer = Buffer::default();
+        buffer.lines.push(Line::from("XY"));
+        let end = buffer.insert_string(
+            Location {
+                line_idx: 0,
+                grapheme_idx: 1,
+            },
+            "e\u{0301}Z",
+        );
+        assert_eq!(&*buffer.lines[0], "Xe\u{0301}ZY");
+        assert_eq!(
+            end,
+            Location {
+                line_idx: 0,
+                grapheme_idx: 3,
+            }
+        );
     }
 }
