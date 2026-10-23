@@ -18,6 +18,7 @@ pub struct TerminalPane {
     pub size: Size,
     pub rows: usize,
     needs_redraw: bool,
+    view_offset: usize,
     buffer: ScrollbackBuffer,
     vt: VtParser,
     session: Option<PtySession>,
@@ -33,6 +34,7 @@ impl TerminalPane {
             size: Size::default(),
             rows: DEFAULT_PANEL_ROWS,
             needs_redraw: false,
+            view_offset: 0,
             buffer: ScrollbackBuffer::new(),
             vt: VtParser::default(),
             session: None,
@@ -48,6 +50,7 @@ impl TerminalPane {
         let pty_rows = content_rows as u16;
         self.buffer = ScrollbackBuffer::new();
         self.vt = VtParser::default();
+        self.view_offset = 0;
         self.buffer.set_screen_size(cols as usize, content_rows);
         let (session, reader) = PtySession::spawn(cwd, cols, pty_rows)?;
         let (thread, rx) = ReaderThread::spawn(reader);
@@ -96,9 +99,31 @@ impl TerminalPane {
             }
         }
         if updated {
+            self.view_offset = 0;
             self.needs_redraw = true;
         }
         updated
+    }
+
+    pub fn scroll_page_up(&mut self) {
+        let page = self.rows.saturating_sub(1).max(1);
+        let origin = self.buffer.screen_origin();
+        self.view_offset = self.view_offset.saturating_add(page).min(origin);
+        self.needs_redraw = true;
+    }
+
+    pub fn scroll_page_down(&mut self) {
+        let page = self.rows.saturating_sub(1).max(1);
+        self.view_offset = self.view_offset.saturating_sub(page);
+        self.needs_redraw = true;
+    }
+
+    pub fn viewing_history(&self) -> bool {
+        self.view_offset > 0
+    }
+
+    fn view_start(&self) -> usize {
+        self.buffer.screen_origin().saturating_sub(self.view_offset)
     }
 
     pub fn write(&mut self, data: &[u8]) -> io::Result<()> {
@@ -151,7 +176,7 @@ impl TerminalPane {
         Terminal::print(&separator)?;
 
         let content_rows = h.saturating_sub(1);
-        let start = self.buffer.screen_origin();
+        let start = self.view_start();
 
         for row in 0..content_rows {
             let screen_row = origin_y + 1 + row;
@@ -185,5 +210,33 @@ impl TerminalPane {
         }
         self.needs_redraw = false;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TerminalPane;
+
+    #[test]
+    fn page_up_scrolls_within_scrollback() {
+        let mut pane = TerminalPane::new();
+        pane.rows = 5;
+        pane.buffer.set_screen_size(20, 4);
+        for _ in 0..10 {
+            pane.vt.feed(b"\n", &mut pane.buffer);
+        }
+        let origin = pane.buffer.screen_origin();
+        assert!(origin > 4);
+        pane.scroll_page_up();
+        assert_eq!(pane.view_offset, 4);
+        assert_eq!(pane.view_start(), origin - 4);
+        assert!(pane.viewing_history());
+        pane.scroll_page_up();
+        assert_eq!(pane.view_offset, origin);
+        pane.scroll_page_down();
+        assert_eq!(pane.view_offset, origin - 4);
+        pane.scroll_page_down();
+        assert_eq!(pane.view_offset, 0);
+        assert!(!pane.viewing_history());
     }
 }

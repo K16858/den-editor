@@ -306,6 +306,16 @@ impl Editor {
                         return;
                     }
                 }
+                if *modifiers == KeyModifiers::NONE {
+                    if *code == KeyCode::PageUp {
+                        self.terminal_pane.scroll_page_up();
+                        return;
+                    }
+                    if *code == KeyCode::PageDown {
+                        self.terminal_pane.scroll_page_down();
+                        return;
+                    }
+                }
                 let bytes = key_event_to_bytes(*code, *modifiers);
                 if !bytes.is_empty() {
                     let _ = self.terminal_pane.write(&bytes);
@@ -2329,25 +2339,33 @@ impl Editor {
         }
 
         let new_caret_pos = if self.in_prompt() {
-            Position {
+            Some(Position {
                 row: bottom_bar_row,
                 col: self.command_bar.caret_position_col(),
-            }
+            })
         } else if self.sidebar_visible && self.sidebar_focus {
             if self.sidebar_mode == SidebarMode::Explorer {
-                self.sidebar.caret_position(0)
+                Some(self.sidebar.caret_position(0))
             } else {
-                Position { row: 0, col: 0 }
+                Some(Position { row: 0, col: 0 })
             }
         } else if self.terminal_focus && self.terminal_visible {
-            self.terminal_pane
-                .cursor_position(main_height + debug_rows, sidebar_w)
+            if self.terminal_pane.viewing_history() {
+                None
+            } else {
+                Some(
+                    self.terminal_pane
+                        .cursor_position(main_height + debug_rows, sidebar_w),
+                )
+            }
         } else {
-            self.view.caret_position()
+            Some(self.view.caret_position())
         };
 
-        let _ = Terminal::move_caret_to(new_caret_pos);
-        let _ = Terminal::show_caret();
+        if let Some(new_caret_pos) = new_caret_pos {
+            let _ = Terminal::move_caret_to(new_caret_pos);
+            let _ = Terminal::show_caret();
+        }
         let _ = Terminal::end_synchronized_update();
         let _ = Terminal::execute();
     }
