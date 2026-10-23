@@ -552,18 +552,30 @@ impl Editor {
     fn open_from_sidebar_selection(&mut self) {
         if let Some(path) = self.sidebar.take_pending_open() {
             let s = path.to_string_lossy();
-            match self.view.load(&s) {
-                Ok(()) => {
-                    self.sidebar_focus = false;
-                    self.refresh_status();
-                    self.update_message("");
-                }
-                Err(e) => {
-                    self.update_message(&format!("ERROR: Could not open file: {e}"));
-                }
+            if self.load_if_clean(&s) {
+                self.sidebar_focus = false;
             }
             self.view.mark_redraw(true);
             self.sidebar.mark_redraw(true);
+        }
+    }
+
+    /// Replaces the buffer only when it has no unsaved edits.
+    fn load_if_clean(&mut self, path: &str) -> bool {
+        if self.view.get_status().is_modified {
+            self.update_message("Unsaved changes. Save the file before opening another.");
+            return false;
+        }
+        match self.view.load(path) {
+            Ok(()) => {
+                self.refresh_status();
+                self.update_message("");
+                true
+            }
+            Err(e) => {
+                self.update_message(&format!("ERROR: Could not open file: {e}"));
+                false
+            }
         }
     }
 
@@ -1856,15 +1868,17 @@ impl Editor {
                         .open(&target)
                     {
                         Ok(_) => {
-                            self.update_message(&format!("Created: {name}"));
                             if let Err(e) = self.sidebar.rebuild() {
                                 self.update_message(&format!("File tree error: {e}"));
                             }
                             self.sidebar.mark_redraw(true);
                             let path_str = target.to_string_lossy().to_string();
-                            if let Err(e) = self.view.load(&path_str) {
-                                self.update_message(&format!("Open error: {e}"));
-                            } else {
+                            if self.view.get_status().is_modified {
+                                self.update_message(&format!(
+                                    "Created {name}, but the current file has unsaved changes."
+                                ));
+                            } else if self.load_if_clean(&path_str) {
+                                self.update_message(&format!("Created: {name}"));
                                 self.status_bar.mark_redraw(true);
                             }
                         }
