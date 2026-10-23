@@ -1,14 +1,29 @@
 use super::{FileInfo, Line, Location};
 use std::fs::{File, read_to_string};
+use std::hash::{Hash, Hasher};
 use std::io::Error;
 use std::io::Write;
+use std::ops::Deref;
 use unicode_segmentation::UnicodeSegmentation;
 
-#[derive(Default)]
 pub struct Buffer {
     pub lines: Vec<Line>,
     pub file_info: FileInfo,
     pub modified: bool,
+    saved_hash: u64,
+}
+
+impl Default for Buffer {
+    fn default() -> Self {
+        let mut buffer = Self {
+            lines: Vec::new(),
+            file_info: FileInfo::default(),
+            modified: false,
+            saved_hash: 0,
+        };
+        buffer.mark_saved();
+        buffer
+    }
 }
 
 impl Buffer {
@@ -18,11 +33,32 @@ impl Buffer {
         for value in contents.lines() {
             lines.push(Line::from(value));
         }
-        Ok(Self {
+        let mut buffer = Self {
             lines,
             file_info: FileInfo::from(file_name),
             modified: false,
-        })
+            saved_hash: 0,
+        };
+        buffer.mark_saved();
+        Ok(buffer)
+    }
+
+    pub fn mark_saved(&mut self) {
+        self.saved_hash = self.content_hash();
+        self.modified = false;
+    }
+
+    pub fn sync_modified_to_saved(&mut self) {
+        self.modified = self.content_hash() != self.saved_hash;
+    }
+
+    fn content_hash(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for line in &self.lines {
+            line.deref().hash(&mut hasher);
+            b'\n'.hash(&mut hasher);
+        }
+        hasher.finish()
     }
 
     fn save_to_file(&self, file_info: &FileInfo) -> Result<(), Error> {
@@ -39,7 +75,7 @@ impl Buffer {
         let file_info = FileInfo::from(file_name);
         self.save_to_file(&file_info)?;
         self.file_info = file_info;
-        self.modified = false;
+        self.mark_saved();
         Ok(())
     }
 
@@ -48,7 +84,7 @@ impl Buffer {
             return Err(Error::other("No file path set"));
         }
         self.save_to_file(&self.file_info)?;
-        self.modified = false;
+        self.mark_saved();
         Ok(())
     }
 

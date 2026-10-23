@@ -886,7 +886,7 @@ impl View {
             }
         }
         self.undo_history.push_redo(op);
-        self.buffer.modified = true;
+        self.buffer.sync_modified_to_saved();
         self.cache_version += 1;
         self.mark_redraw(true);
     }
@@ -933,7 +933,7 @@ impl View {
             }
         }
         self.undo_history.push_edit(op);
-        self.buffer.modified = true;
+        self.buffer.sync_modified_to_saved();
         self.cache_version += 1;
         self.mark_redraw(true);
     }
@@ -1475,5 +1475,25 @@ mod tests {
                 grapheme_idx: 0,
             }
         );
+    }
+
+    #[test]
+    fn undo_to_saved_content_clears_modified() {
+        let dir = std::env::temp_dir().join(format!("den-undo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "hi\n").unwrap();
+        let mut view = View::default();
+        view.load(path.to_str().unwrap()).unwrap();
+        assert!(!view.get_status().is_modified);
+        view.handle_edit_command(Edit::Insert('x'));
+        assert!(view.get_status().is_modified);
+        view.undo();
+        assert!(!view.get_status().is_modified);
+        view.redo();
+        assert!(view.get_status().is_modified);
+        view.undo();
+        assert!(!view.get_status().is_modified);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
