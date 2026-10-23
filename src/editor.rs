@@ -1730,6 +1730,7 @@ impl Editor {
             System(Dismiss) => {
                 self.set_prompt(PromptType::None);
                 self.view.dismiss_search();
+                self.update_message("");
             }
             Edit(InsertNewline) => {
                 self.set_prompt(PromptType::None);
@@ -1739,6 +1740,7 @@ impl Editor {
                 self.command_bar.handle_edit_command(edit_command);
                 let query = self.command_bar.value();
                 self.view.search(&query);
+                self.report_search();
             }
             Move(move_cmd)
                 if matches!(
@@ -1747,11 +1749,13 @@ impl Editor {
                 ) =>
             {
                 self.view.search_next();
+                self.report_search();
             }
             Move(move_cmd)
                 if matches!(move_cmd.direction, MoveDirection::Up | MoveDirection::Left) =>
             {
                 self.view.search_prev();
+                self.report_search();
             }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
@@ -1794,6 +1798,7 @@ impl Editor {
             System(Dismiss) => {
                 self.set_prompt(PromptType::None);
                 self.view.dismiss_search();
+                self.update_message("");
             }
             Edit(InsertNewline) => {
                 self.replace_query = self.command_bar.value();
@@ -1803,6 +1808,7 @@ impl Editor {
                 self.command_bar.handle_edit_command(edit_command);
                 let query = self.command_bar.value();
                 self.view.search(&query);
+                self.report_search();
             }
             Move(move_cmd)
                 if matches!(
@@ -1811,11 +1817,13 @@ impl Editor {
                 ) =>
             {
                 self.view.search_next();
+                self.report_search();
             }
             Move(move_cmd)
                 if matches!(move_cmd.direction, MoveDirection::Up | MoveDirection::Left) =>
             {
                 self.view.search_prev();
+                self.report_search();
             }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
@@ -1834,6 +1842,7 @@ impl Editor {
             System(Dismiss) => {
                 self.set_prompt(PromptType::None);
                 self.view.dismiss_search();
+                self.update_message("");
             }
             Edit(InsertNewline) => {
                 let replacement = self.command_bar.value();
@@ -2257,6 +2266,13 @@ impl Editor {
     // =========================================
     fn update_message(&mut self, new_message: &str) {
         self.message_bar.update_message(new_message);
+    }
+
+    fn report_search(&mut self) {
+        match self.view.search_summary() {
+            Some(label) => self.update_message(&label),
+            None => self.update_message(""),
+        }
     }
 
     fn render_debugger_sidebar(&mut self, total_height: usize) {

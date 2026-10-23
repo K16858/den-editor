@@ -1375,6 +1375,22 @@ impl View {
         self.search_in_direction(self.text_location, SearchDirection::Backward);
     }
 
+    /// `None` when there is no query. `"No matches."` when the cursor is not on a hit.
+    pub fn search_summary(&self) -> Option<String> {
+        let query = self.get_search_query()?;
+        if query.is_empty() {
+            return None;
+        }
+        let matches = self.buffer.find_all_matches(query);
+        if matches.is_empty() {
+            return Some("No matches.".to_string());
+        }
+        match matches.iter().position(|loc| *loc == self.text_location) {
+            Some(index) => Some(format!("Match {}/{}", index + 1, matches.len())),
+            None => Some("No matches.".to_string()),
+        }
+    }
+
     fn center_text_location(&mut self) {
         let Size { height, width } = self.size;
         let content_width = width.saturating_sub(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
@@ -1479,6 +1495,21 @@ mod tests {
         assert_eq!(&*view.buffer.lines[0], "()");
         view.undo();
         assert_eq!(&*view.buffer.lines[0], "");
+    }
+
+    #[test]
+    fn search_summary_reports_the_hit() {
+        let mut view = View::default();
+        view.paste_text("ab ab");
+        view.enter_search();
+        view.search("");
+        assert_eq!(view.search_summary(), None);
+        view.search("z");
+        assert_eq!(view.search_summary().as_deref(), Some("No matches."));
+        view.search("ab");
+        assert_eq!(view.search_summary().as_deref(), Some("Match 1/2"));
+        view.search_next();
+        assert_eq!(view.search_summary().as_deref(), Some("Match 2/2"));
     }
 
     #[test]
