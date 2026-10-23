@@ -1,5 +1,18 @@
 # Den Editor
 
+<div align="center" style="text-align: center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/den-icon-dark.svg">
+  <img alt="Den アイコン" src="docs/assets/den-icon.svg" width="83" height="100">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/den-logo-dark.svg">
+  <img alt="Den ロゴ" src="docs/assets/den-logo.svg" width="200" height="100">
+</picture>
+
+</div>
+
 Rust で実装された TUI テキストエディタです。  
 編集、ファイルツリー、統合ターミナル、デバッガを1画面で扱えます。
 
