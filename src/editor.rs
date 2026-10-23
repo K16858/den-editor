@@ -637,12 +637,14 @@ impl Editor {
                         "pathFormat": "path"
                     }),
                 ) {
+                    session.stop();
                     self.update_message(&format!("Debug init error: {e}"));
                     return;
                 }
                 let launch_args = match self.build_launch_arguments(&adapter) {
                     Ok(args) => args,
                     Err(msg) => {
+                        session.stop();
                         self.update_message(&msg);
                         return;
                     }
@@ -997,20 +999,14 @@ impl Editor {
                     })
                     .unwrap_or_default();
                 let frame_id = frames.first().map_or(0, |f| f.id);
-                let pause_line = frames.first().map(|f| f.line);
-                let is_current_file = frames.first().is_some_and(|f| {
-                    self.view.file_path().is_some_and(|path| {
-                        let current = Self::dap_source_path_string(&path);
-                        current == f.source_path
-                    })
-                });
+                let pause_line = frames.first().map(|f| f.line).unwrap_or(0);
+                let source_path = frames
+                    .first()
+                    .map(|f| f.source_path.clone())
+                    .unwrap_or_default();
                 self.debug_state.stack_frames = frames;
                 self.debug_state.selected_frame_idx = 0;
-                if is_current_file {
-                    self.view.set_debug_stop_line(pause_line);
-                } else {
-                    self.view.set_debug_stop_line(None);
-                }
+                self.show_debug_location(&source_path, pause_line);
                 if frame_id != 0 {
                     self.request_scopes(frame_id);
                 }
@@ -1253,6 +1249,53 @@ impl Editor {
         }
     }
 
+    fn same_source_path(local: &Path, remote: &str) -> bool {
+        if remote.is_empty() {
+            return false;
+        }
+        let local = Self::dap_source_path_string(local);
+        let remote = Self::dap_source_path_string(Path::new(remote));
+        #[cfg(windows)]
+        return local
+            .replace('/', "\\")
+            .eq_ignore_ascii_case(&remote.replace('/', "\\"));
+        #[cfg(not(windows))]
+        return local == remote;
+    }
+
+    fn breakpoint_key(path: &Path) -> PathBuf {
+        PathBuf::from(Self::dap_source_path_string(path))
+    }
+
+    /// Shows `line` when `source_path` is the current file, or opens it when the buffer is clean.
+    fn show_debug_location(&mut self, source_path: &str, line: i64) -> bool {
+        if source_path.is_empty() {
+            self.view.set_debug_stop_line(None);
+            return false;
+        }
+        if self
+            .view
+            .file_path()
+            .is_some_and(|path| Self::same_source_path(&path, source_path))
+        {
+            self.view.set_debug_stop_line(Some(line));
+            return true;
+        }
+        if self.view.get_status().is_modified {
+            self.view.set_debug_stop_line(None);
+            self.update_message("Paused in another file. Save the current file to open it.");
+            return false;
+        }
+        if self.view.load(source_path).is_ok() {
+            self.view.set_debug_stop_line(Some(line));
+            self.refresh_status();
+            true
+        } else {
+            self.view.set_debug_stop_line(None);
+            false
+        }
+    }
+
     fn resolve_go_launch_dir(file_path: &Path, workspace: &Path) -> PathBuf {
         // Prefer the nearest directory containing go.mod starting from the active file directory.
         let mut dir = file_path
@@ -1436,7 +1479,8 @@ impl Editor {
         };
         let line =
             i64::try_from(self.view.current_line_index().saturating_add(1)).unwrap_or(i64::MAX);
-        let entry = self.breakpoints.entry(path.clone()).or_default();
+        let key = Self::breakpoint_key(&path);
+        let entry = self.breakpoints.entry(key.clone()).or_default();
         let added = if let Some(pos) = entry.iter().position(|l| *l == line) {
             entry.remove(pos);
             false
@@ -1453,7 +1497,7 @@ impl Editor {
                     .send_request(
                         "setBreakpoints",
                         json!({
-                            "source": { "path": Self::dap_source_path_string(&path) },
+                            "source": { "path": Self::dap_source_path_string(&key) },
                             "breakpoints": lines.iter().map(|line| json!({ "line": line })).collect::<Vec<_>>()
                         }),
                     )
@@ -1587,16 +1631,9 @@ impl Editor {
             if frame.id != 0 {
                 self.request_scopes(frame.id);
             }
-            if self
-                .view
-                .file_path()
-                .is_some_and(|path| Self::dap_source_path_string(&path) == frame.source_path)
-            {
-                self.view.set_debug_stop_line(Some(frame.line));
-            } else {
-                self.view.set_debug_stop_line(None);
+            if self.show_debug_location(&frame.source_path, frame.line) {
+                self.update_message(&format!("Selected frame #{next}: {}", frame.name));
             }
-            self.update_message(&format!("Selected frame #{next}: {}", frame.name));
         }
     }
 
@@ -2121,9 +2158,10 @@ impl Editor {
 
     fn sync_view_breakpoints(&mut self) {
         if let Some(path) = self.active_file_path() {
+            let key = Self::breakpoint_key(&path);
             let lines = self
                 .breakpoints
-                .get(&path)
+                .get(&key)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
             self.view.set_breakpoint_lines(lines);
