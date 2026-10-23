@@ -24,7 +24,6 @@ impl GenericHighlighter {
                 line_comment_start: "//".to_string(),
                 block_comment_start: "/*".to_string(),
                 block_comment_end: "*/".to_string(),
-                brackets: vec![],
                 line_prefix_keyword_markers: vec![],
                 line_prefix_comment_markers: vec![],
                 full_line_comment_prefixes: vec![],
@@ -43,7 +42,6 @@ impl GenericHighlighter {
                         line_comment_start: "//".to_string(),
                         block_comment_start: "/*".to_string(),
                         block_comment_end: "*/".to_string(),
-                        brackets: vec![],
                         line_prefix_keyword_markers: vec![],
                         line_prefix_comment_markers: vec![],
                         full_line_comment_prefixes: vec![],
@@ -61,6 +59,10 @@ impl GenericHighlighter {
             }
         };
 
+        Some(Self::from_config(language, config))
+    }
+
+    pub fn from_config(language: &str, config: LanguageConfig) -> Self {
         let keyword_count = config.keywords.len();
         let all_patterns: Vec<&str> = config
             .keywords
@@ -74,12 +76,12 @@ impl GenericHighlighter {
             AhoCorasick::new(&all_patterns).ok()
         };
 
-        Some(Self {
+        Self {
             config,
             language_name: language.to_string(),
             keyword_ac,
             keyword_count,
-        })
+        }
     }
 }
 

@@ -1,7 +1,8 @@
 use super::Highlighter;
 use super::config_file::discover_language_extensions;
 use super::generic::GenericHighlighter;
-use super::rust::RustHighlighter;
+use super::load_language_config;
+use super::{embedded_rust_config, merge_config};
 use std::collections::HashMap;
 
 pub struct HighlighterRegistry {
@@ -16,7 +17,15 @@ impl HighlighterRegistry {
             extension_map: HashMap::new(),
         };
 
-        registry.register(Box::new(RustHighlighter::new()), vec!["rs".to_string()]);
+        let rust_config = if let Ok(user) = load_language_config("rust", None) {
+            merge_config(&embedded_rust_config(), Some(&user))
+        } else {
+            embedded_rust_config()
+        };
+        registry.register(
+            Box::new(GenericHighlighter::from_config("rust", rust_config)),
+            vec!["rs".to_string()],
+        );
 
         for (language, extensions) in discover_language_extensions() {
             if language.eq_ignore_ascii_case("rust") {
