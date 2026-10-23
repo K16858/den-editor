@@ -100,19 +100,6 @@ impl Buffer {
         self.lines.len()
     }
 
-    pub fn insert_char(&mut self, character: char, at: Location) {
-        if at.line_idx > self.height() {
-            return;
-        }
-        if at.line_idx == self.height() {
-            self.lines.push(Line::from(&character.to_string()));
-            self.modified = true;
-        } else if let Some(line) = self.lines.get_mut(at.line_idx) {
-            line.insert_char(character, at.grapheme_idx);
-            self.modified = true;
-        }
-    }
-
     pub fn delete(&mut self, at: Location) {
         if let Some(line) = self.lines.get(at.line_idx) {
             if at.grapheme_idx >= line.grapheme_count()

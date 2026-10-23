@@ -724,11 +724,9 @@ impl View {
 
         self.text_location = at;
         self.selection = None;
-        if self.buffer.is_file_loaded() {
-            self.undo_history.clear_redo();
-            if let Some(text) = deleted_text {
-                self.undo_history.push_edit(EditOp::Delete { at, text });
-            }
+        self.undo_history.clear_redo();
+        if let Some(text) = deleted_text {
+            self.undo_history.push_edit(EditOp::Delete { at, text });
         }
         self.buffer.modified = true;
         self.cache_version += 1;
@@ -802,26 +800,15 @@ impl View {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         let _ = self.delete_selection();
 
-        if self.buffer.is_file_loaded() {
-            self.undo_history.clear_redo();
-            let at = self.text_location;
-            let new_loc = self.buffer.insert_string(at, &text);
-            self.text_location = new_loc;
-            self.undo_history.push_edit(EditOp::Insert {
-                at,
-                text: text.to_string(),
-                cursor_after: new_loc,
-            });
-        } else {
-            for (idx, line) in text.split('\n').enumerate() {
-                if idx > 0 {
-                    self.insert_newline();
-                }
-                for ch in line.chars() {
-                    self.insert_char(ch);
-                }
-            }
-        }
+        self.undo_history.clear_redo();
+        let at = self.text_location;
+        let new_loc = self.buffer.insert_string(at, &text);
+        self.text_location = new_loc;
+        self.undo_history.push_edit(EditOp::Insert {
+            at,
+            text: text.to_string(),
+            cursor_after: new_loc,
+        });
         self.cache_version += 1;
         self.mark_redraw(true);
     }
@@ -855,7 +842,7 @@ impl View {
     }
 
     pub fn undo(&mut self) {
-        if !self.buffer.is_file_loaded() || !self.undo_history.has_undo() {
+        if !self.undo_history.has_undo() {
             return;
         }
         let Some(op) = self.undo_history.pop_undo() else {
@@ -892,7 +879,7 @@ impl View {
     }
 
     pub fn redo(&mut self) {
-        if !self.buffer.is_file_loaded() || !self.undo_history.has_redo() {
+        if !self.undo_history.has_redo() {
             return;
         }
         let Some(op) = self.undo_history.pop_redo() else {
@@ -963,9 +950,6 @@ impl View {
     const INDENT: &'static str = "    "; // 4 spaces; TODO: make configurable
 
     fn indent_selection_or_line(&mut self) {
-        if !self.buffer.is_file_loaded() {
-            return;
-        }
         let line_range = self.selected_line_range();
         self.undo_history.clear_redo();
 
@@ -1005,9 +989,6 @@ impl View {
     }
 
     fn dedent_selection_or_line(&mut self) {
-        if !self.buffer.is_file_loaded() {
-            return;
-        }
         let line_range = self.selected_line_range();
         self.undo_history.clear_redo();
 
@@ -1132,24 +1113,20 @@ impl View {
             .get(self.text_location.line_idx)
             .map_or(0, Line::grapheme_count);
 
-        if self.buffer.is_file_loaded() {
-            self.undo_history.clear_redo();
-            let at = self.text_location;
-            self.buffer.insert_string(at, &text_to_insert);
-            // For auto-close pairs, cursor sits between the pair (one step right of `at`).
-            // For normal single-char insertion, that is also one step right of `at`.
-            let cursor_after = Location {
-                grapheme_idx: at.grapheme_idx + 1,
-                line_idx: at.line_idx,
-            };
-            self.undo_history.push_edit(EditOp::Insert {
-                at,
-                text: text_to_insert,
-                cursor_after,
-            });
-        } else {
-            self.buffer.insert_char(character, self.text_location);
-        }
+        self.undo_history.clear_redo();
+        let at = self.text_location;
+        self.buffer.insert_string(at, &text_to_insert);
+        // For auto-close pairs, cursor sits between the pair (one step right of `at`).
+        // For normal single-char insertion, that is also one step right of `at`.
+        let cursor_after = Location {
+            grapheme_idx: at.grapheme_idx + 1,
+            line_idx: at.line_idx,
+        };
+        self.undo_history.push_edit(EditOp::Insert {
+            at,
+            text: text_to_insert,
+            cursor_after,
+        });
 
         let new_len = self
             .buffer
@@ -1180,20 +1157,18 @@ impl View {
         let _ = self.delete_selection(); // pushes a Delete op
         let delete_op = self.undo_history.pop_last_edit();
 
-        if self.buffer.is_file_loaded() {
-            let cursor_after = self.buffer.insert_string(at, &wrapped);
-            self.text_location = cursor_after;
-            let insert_op = EditOp::Insert {
-                at,
-                text: wrapped,
-                cursor_after,
-            };
-            let group_op = match delete_op {
-                Some(del) => EditOp::Group(vec![del, insert_op]),
-                None => insert_op,
-            };
-            self.undo_history.push_edit(group_op);
-        }
+        let cursor_after = self.buffer.insert_string(at, &wrapped);
+        self.text_location = cursor_after;
+        let insert_op = EditOp::Insert {
+            at,
+            text: wrapped,
+            cursor_after,
+        };
+        let group_op = match delete_op {
+            Some(del) => EditOp::Group(vec![del, insert_op]),
+            None => insert_op,
+        };
+        self.undo_history.push_edit(group_op);
         self.cache_version += 1;
         self.mark_redraw(true);
     }
@@ -1209,23 +1184,15 @@ impl View {
             .unwrap_or_default();
         let insert_text = format!("\n{indent}");
 
-        if self.buffer.is_file_loaded() {
-            self.undo_history.clear_redo();
-            let at = self.text_location;
-            let cursor_after = self.buffer.insert_string(at, &insert_text);
-            self.text_location = cursor_after;
-            self.undo_history.push_edit(EditOp::Insert {
-                at,
-                text: insert_text,
-                cursor_after,
-            });
-        } else {
-            self.buffer.insert_newline(self.text_location);
-            self.text_location = Location {
-                line_idx: self.text_location.line_idx + 1,
-                grapheme_idx: 0,
-            };
-        }
+        self.undo_history.clear_redo();
+        let at = self.text_location;
+        let cursor_after = self.buffer.insert_string(at, &insert_text);
+        self.text_location = cursor_after;
+        self.undo_history.push_edit(EditOp::Insert {
+            at,
+            text: insert_text,
+            cursor_after,
+        });
         self.scroll_text_location_into_view();
         self.cache_version += 1;
         self.mark_redraw(true);
@@ -1251,14 +1218,12 @@ impl View {
         }
 
         if self.text_location.line_idx != 0 || self.text_location.grapheme_idx != 0 {
-            if self.buffer.is_file_loaded() {
-                self.undo_history.clear_redo();
-            }
+            self.undo_history.clear_redo();
             self.handle_move_command(Move::left(false));
             let at = self.text_location;
             let text = self.buffer.content_deleted_at(at).unwrap_or_default();
             self.buffer.delete(at);
-            if self.buffer.is_file_loaded() && !text.is_empty() {
+            if !text.is_empty() {
                 self.undo_history.push_edit(EditOp::Delete { at, text });
             }
             self.cache_version += 1;
@@ -1274,7 +1239,7 @@ impl View {
         let at = self.text_location;
         let text = self.buffer.content_deleted_at(at).unwrap_or_default();
         self.buffer.delete(self.text_location);
-        if self.buffer.is_file_loaded() && !text.is_empty() {
+        if !text.is_empty() {
             self.undo_history.clear_redo();
             self.undo_history.push_edit(EditOp::Delete { at, text });
         }
@@ -1329,7 +1294,7 @@ impl View {
     /// Returns the number of replacements made.
     /// Note: this operation is not recorded in the undo history.
     pub fn replace_all(&mut self, query: &str, replacement: &str) -> usize {
-        if query.is_empty() || !self.buffer.is_file_loaded() {
+        if query.is_empty() {
             return 0;
         }
         let matches = self.buffer.find_all_matches(query);
@@ -1495,5 +1460,14 @@ mod tests {
         view.undo();
         assert!(!view.get_status().is_modified);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn untitled_buffer_autoclose_and_undo() {
+        let mut view = View::default();
+        view.handle_edit_command(Edit::Insert('('));
+        assert_eq!(&*view.buffer.lines[0], "()");
+        view.undo();
+        assert_eq!(&*view.buffer.lines[0], "");
     }
 }
