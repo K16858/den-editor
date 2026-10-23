@@ -61,6 +61,7 @@ const DEFAULT_ADAPTER_CONFIGS: &[&str] = &[
     include_str!("../../../docs/examples/default/debuggers/go.toml"),
     include_str!("../../../docs/examples/default/debuggers/python.toml"),
     include_str!("../../../docs/examples/default/debuggers/rust.toml"),
+    include_str!("../../../docs/examples/default/debuggers/mips.toml"),
 ];
 
 fn default_health_check_args() -> Vec<String> {
@@ -247,7 +248,15 @@ mod tests {
         assert!(ids.contains(&"go-delve"));
         assert!(ids.contains(&"python-debugpy"));
         assert!(ids.contains(&"rust-codelldb"));
+        assert!(ids.contains(&"pluspim"));
         assert!(!ids.contains(&"my-adapter"));
+
+        let mips = configs.iter().find(|cfg| cfg.id == "pluspim").unwrap();
+        assert_eq!(mips.file_extensions, ["asm"]);
+        assert_eq!(mips.args, ["--debug", "${file}"]);
+        assert_eq!(mips.dap_transport, "tcp-server-dials-client");
+        assert_eq!(mips.client_addr_arg(), "--connect");
+        assert_eq!(mips.health_check_args(), ["--help"]);
 
         let go = configs.iter().find(|cfg| cfg.id == "go-delve").unwrap();
         assert_eq!(go.dap_transport, "tcp-server-dials-client");
