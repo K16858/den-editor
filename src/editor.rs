@@ -1771,6 +1771,12 @@ impl Editor {
 
     fn process_command_during_save(&mut self, command: Command) {
         match command {
+            Move(move_cmd) if matches!(move_cmd.direction, MoveDirection::Left) => {
+                self.command_bar.move_left();
+            }
+            Move(move_cmd) if matches!(move_cmd.direction, MoveDirection::Right) => {
+                self.command_bar.move_right();
+            }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
@@ -1857,6 +1863,12 @@ impl Editor {
                 }
             }
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
+            Move(move_cmd) if matches!(move_cmd.direction, MoveDirection::Left) => {
+                self.command_bar.move_left();
+            }
+            Move(move_cmd) if matches!(move_cmd.direction, MoveDirection::Right) => {
+                self.command_bar.move_right();
+            }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
@@ -1933,6 +1945,12 @@ impl Editor {
                 }
             }
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
+            Move(move_cmd) if matches!(move_cmd.direction, MoveDirection::Left) => {
+                self.command_bar.move_left();
+            }
+            Move(move_cmd) if matches!(move_cmd.direction, MoveDirection::Right) => {
+                self.command_bar.move_right();
+            }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
