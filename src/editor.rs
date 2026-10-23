@@ -667,13 +667,18 @@ impl Editor {
             self.update_message("No debug adapter for current file.");
             return;
         };
-        let adapter = match Self::ensure_adapter_ready(&adapter) {
+        let mut adapter = match Self::ensure_adapter_ready(&adapter) {
             Ok(adapter) => adapter,
             Err(msg) => {
                 self.update_message(&msg);
                 return;
             }
         };
+        if let Some(path) = self.view.file_path() {
+            let placeholders =
+                Self::build_debug_placeholders(&path, self.sidebar.workspace_root());
+            adapter.expand_args(&placeholders);
+        }
         let debug_cwd = if adapter.session_cwd_template.is_empty() {
             None
         } else {

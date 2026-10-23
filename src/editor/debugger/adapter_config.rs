@@ -90,6 +90,21 @@ impl AdapterConfig {
         }
         resolved
     }
+
+    /// Replaces `${file}` and the other debug placeholders in `args`.
+    /// Longer names are replaced first so `${file}` does not consume `${fileStem}`.
+    pub fn expand_args(&mut self, placeholders: &HashMap<&str, String>) {
+        let mut keys: Vec<&str> = placeholders.keys().copied().collect();
+        keys.sort_by_key(|key| std::cmp::Reverse(key.len()));
+        for arg in &mut self.args {
+            for key in &keys {
+                let Some(value) = placeholders.get(key) else {
+                    continue;
+                };
+                *arg = arg.replace(key, value);
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -313,6 +328,25 @@ mod tests {
         let resolved = adapter.with_fallback_launch();
         assert_eq!(resolved.command, "py");
         assert_eq!(resolved.args, ["-m", "debugpy.adapter"]);
+    }
+
+    #[test]
+    fn expand_args_replaces_file_without_touching_file_stem() {
+        let mut adapter = parse_adapter_config(
+            r#"
+            id = "pluspim"
+            display_name = "MIPS"
+            command = "PlusPim"
+            args = ["--debug", "${file}", "${fileStem}"]
+            "#,
+        )
+        .unwrap();
+        let placeholders = HashMap::from([
+            ("${file}", "C:/proj/main.asm".to_string()),
+            ("${fileStem}", "main".to_string()),
+        ]);
+        adapter.expand_args(&placeholders);
+        assert_eq!(adapter.args, ["--debug", "C:/proj/main.asm", "main"]);
     }
 }
 
