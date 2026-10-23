@@ -1364,7 +1364,8 @@ impl Editor {
                 .status()
         };
 
-        let primary_result = run_probe(&probe_command, &adapter.health_check_args);
+        let health_check_args = adapter.health_check_args();
+        let primary_result = run_probe(&probe_command, &health_check_args);
         if matches!(&primary_result, Ok(status) if status.success()) {
             return Ok(());
         }

@@ -21,8 +21,9 @@ pub struct AdapterConfig {
     pub session_cwd_template: String,
     #[serde(default)]
     pub health_check_command: String,
-    #[serde(default = "default_health_check_args")]
-    pub health_check_args: Vec<String>,
+    /// `None` means "not set in this file"; see `client_addr_arg` doc comment.
+    #[serde(default)]
+    pub health_check_args: Option<Vec<String>>,
     #[serde(default)]
     pub health_check_fallback_command: String,
     #[serde(default)]
@@ -69,6 +70,12 @@ impl AdapterConfig {
 
     pub fn sync_breakpoints_before_auto_continue(&self) -> bool {
         self.sync_breakpoints_before_auto_continue.unwrap_or(false)
+    }
+
+    pub fn health_check_args(&self) -> Vec<String> {
+        self.health_check_args
+            .clone()
+            .unwrap_or_else(default_health_check_args)
     }
 }
 
@@ -149,7 +156,7 @@ fn merge_missing_fields_from_default(current: &mut AdapterConfig, default_cfg: &
     if current.health_check_command.is_empty() {
         current.health_check_command = default_cfg.health_check_command.clone();
     }
-    if current.health_check_args == default_health_check_args() && !default_cfg.health_check_args.is_empty() {
+    if current.health_check_args.is_none() {
         current.health_check_args = default_cfg.health_check_args.clone();
     }
     if current.health_check_fallback_command.is_empty() {
@@ -241,7 +248,26 @@ mod tests {
         assert_eq!(current.auto_continue_stop_reasons, ["entry"]);
         assert_eq!(current.launch_template["program"], ".");
         assert_eq!(current.launch_overrides["output"], "keep");
-        assert_eq!(current.health_check_args, ["version"]);
+        assert_eq!(current.health_check_args(), ["version"]);
+    }
+
+    #[test]
+    fn explicit_health_check_args_override_the_default() {
+        let mut current = parse_adapter_config(
+            r#"
+            id = "go-delve"
+            display_name = "Go (Delve)"
+            command = "dlv"
+            health_check_args = ["--version"]
+            "#,
+        )
+        .unwrap();
+        let default_cfg = embedded_default_configs()
+            .into_iter()
+            .find(|cfg| cfg.id == "go-delve")
+            .unwrap();
+        merge_missing_fields_from_default(&mut current, &default_cfg);
+        assert_eq!(current.health_check_args(), ["--version"]);
     }
 }
 

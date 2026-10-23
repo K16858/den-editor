@@ -27,7 +27,8 @@ client_addr_arg = "--client-addr"
 health_check_command = ""
 
 # Optional process health check command args.
-# Example: ["--version"] or ["version"]
+# Omit this line to inherit from a same-id default config; an explicit
+# value here always wins. When nothing sets it, ["--version"] is used.
 health_check_args = ["--version"]
 
 # Optional fallback health check command/args when primary probe fails.
