@@ -1340,16 +1340,9 @@ impl View {
     }
 
     fn get_search_query(&self) -> Option<&Line> {
-        let query = self
-            .search_info
+        self.search_info
             .as_ref()
-            .and_then(|search_info| search_info.query.as_ref());
-
-        debug_assert!(
-            query.is_some(),
-            "Attempting to search with malformed searchinfo present"
-        );
-        query
+            .and_then(|search_info| search_info.query.as_ref())
     }
 
     fn search_in_direction(&mut self, from: Location, direction: SearchDirection) {
@@ -1533,6 +1526,17 @@ mod tests {
         view.buffer.lines = vec![Line::default(); 10_000];
         assert_eq!(view.number_cols(), 5);
         assert_eq!(view.gutter_cols(), 8);
+    }
+
+    #[test]
+    fn search_arrow_before_query_does_not_panic() {
+        let mut view = View::default();
+        view.buffer.lines = vec![Line::from("abc")];
+        view.enter_search();
+        view.search_next();
+        view.search_prev();
+        assert_eq!(view.search_summary(), None);
+        assert_eq!(view.text_location.grapheme_idx, 0);
     }
 
     #[test]
