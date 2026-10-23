@@ -135,8 +135,22 @@ impl View {
         Ok(())
     }
 
-    const GUTTER_WIDTH: usize = 5;
+    const MIN_NUMBER_COLS: usize = 4;
     const GUTTER_PADDING: usize = 2;
+
+    fn number_cols(&self) -> usize {
+        let mut lines = self.buffer.height().max(1);
+        let mut digits = 1;
+        while lines >= 10 {
+            lines /= 10;
+            digits += 1;
+        }
+        digits.max(Self::MIN_NUMBER_COLS)
+    }
+
+    fn gutter_cols(&self) -> usize {
+        1 + self.number_cols() + Self::GUTTER_PADDING
+    }
 
     /// Line number column + optional markers (breakpoint/stopped) in same 7-col layout.
     fn gutter_prefix_parts(&self, line_idx: usize) -> (String, String, bool, bool) {
@@ -154,7 +168,7 @@ impl View {
             "{m}{:>w$}{pad}",
             n,
             m = marker,
-            w = Self::GUTTER_WIDTH - 1,
+            w = self.number_cols(),
             pad = " ".repeat(Self::GUTTER_PADDING)
         );
         // The format contains the marker as first character; split to style it separately.
@@ -165,7 +179,7 @@ impl View {
     #[allow(clippy::too_many_lines)]
     fn render_buffer(&mut self, origin_y: usize) -> Result<(), Error> {
         let Size { height, width } = self.size;
-        let gutter_total = Self::GUTTER_WIDTH + Self::GUTTER_PADDING;
+        let gutter_total = self.gutter_cols();
         let content_width = width.saturating_sub(gutter_total);
         let top = self.scroll_offset.row;
 
@@ -353,7 +367,7 @@ impl View {
                     )?;
                 }
             } else {
-                let empty_prefix = " ".repeat(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
+                let empty_prefix = " ".repeat(self.gutter_cols());
                 self.render_line(draw_row, &format!("{empty_prefix}~"))?;
                 state = HighlightState::default();
             }
@@ -363,7 +377,7 @@ impl View {
 
     fn draw_welcome_message_at(&self, at: usize, width: usize) -> Result<(), Error> {
         let mut welcome_message = format!("{NAME} -- version {VERSION}");
-        let gutter_total = Self::GUTTER_WIDTH + Self::GUTTER_PADDING;
+        let gutter_total = self.gutter_cols();
         let content_width = width.saturating_sub(gutter_total);
         let len = welcome_message.len();
         let prefix = " ".repeat(gutter_total);
@@ -380,7 +394,7 @@ impl View {
     }
 
     fn draw_empty_row(&self, at: usize) -> Result<(), Error> {
-        let empty_prefix = " ".repeat(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
+        let empty_prefix = " ".repeat(self.gutter_cols());
         self.render_line(at, &format!("{empty_prefix}~"))?;
         Ok(())
     }
@@ -403,7 +417,7 @@ impl View {
             rel.row = 0;
         }
 
-        let gutter_total = Self::GUTTER_WIDTH + Self::GUTTER_PADDING;
+        let gutter_total = self.gutter_cols();
         Position {
             col: rel.col + gutter_total + self.col_offset,
             row: rel.row,
@@ -616,7 +630,7 @@ impl View {
         let content_width = self
             .size
             .width
-            .saturating_sub(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
+            .saturating_sub(self.gutter_cols());
         let offset_changed = if to < self.scroll_offset.col {
             self.scroll_offset.col = to;
             true
@@ -1393,7 +1407,7 @@ impl View {
 
     fn center_text_location(&mut self) {
         let Size { height, width } = self.size;
-        let content_width = width.saturating_sub(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
+        let content_width = width.saturating_sub(self.gutter_cols());
         let Position { row, col } = self.text_location_to_position();
         let vertical_mid = height.div_ceil(2);
         let horizontal_mid = content_width.div_ceil(2);
@@ -1495,6 +1509,15 @@ mod tests {
         assert_eq!(&*view.buffer.lines[0], "()");
         view.undo();
         assert_eq!(&*view.buffer.lines[0], "");
+    }
+
+    #[test]
+    fn gutter_grows_past_four_digits() {
+        let mut view = View::default();
+        assert_eq!(view.gutter_cols(), 7);
+        view.buffer.lines = vec![Line::default(); 10_000];
+        assert_eq!(view.number_cols(), 5);
+        assert_eq!(view.gutter_cols(), 8);
     }
 
     #[test]
