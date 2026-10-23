@@ -1214,6 +1214,7 @@ impl View {
         self.scroll_offset = Position::default();
         self.selection = None;
         self.search_info = None;
+        self.debug_stop_line = None;
         self.undo_history.clear_all();
         self.highlight_cache.clear();
         self.cache_version += 1;
@@ -1526,6 +1527,19 @@ mod tests {
         view.buffer.lines = vec![Line::default(); 10_000];
         assert_eq!(view.number_cols(), 5);
         assert_eq!(view.gutter_cols(), 8);
+    }
+
+    #[test]
+    fn load_clears_debug_stop_line() {
+        let dir = std::env::temp_dir().join(format!("den-stop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "hi\n").unwrap();
+        let mut view = View::default();
+        view.set_debug_stop_line(Some(1));
+        view.load(path.to_str().unwrap()).unwrap();
+        assert_eq!(view.debug_stop_line, None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
