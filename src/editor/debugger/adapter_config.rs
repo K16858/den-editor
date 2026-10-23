@@ -52,6 +52,12 @@ pub struct AdapterConfig {
 
 const DEFAULT_CLIENT_ADDR_ARG: &str = "--client-addr";
 
+const DEFAULT_ADAPTER_CONFIGS: &[&str] = &[
+    include_str!("../../../docs/examples/default/debuggers/go.toml"),
+    include_str!("../../../docs/examples/default/debuggers/python.toml"),
+    include_str!("../../../docs/examples/default/debuggers/rust.toml"),
+];
+
 fn default_health_check_args() -> Vec<String> {
     vec!["--version".to_string()]
 }
@@ -78,16 +84,28 @@ pub fn discover_adapter_configs() -> Vec<AdapterConfig> {
 
     if let Ok(mut config_dir) = get_config_dir() {
         config_dir.push("debuggers");
-        load_from_dir(&config_dir, &mut map, false);
+        load_from_dir(&config_dir, &mut map);
     }
 
-    let default_dir = Path::new("docs/examples/default/debuggers");
-    load_from_dir(default_dir, &mut map, true);
+    for cfg in embedded_default_configs() {
+        if let Some(existing) = map.get_mut(&cfg.id) {
+            merge_missing_fields_from_default(existing, &cfg);
+        } else {
+            map.insert(cfg.id.clone(), cfg);
+        }
+    }
 
     map.into_values().collect()
 }
 
-fn load_from_dir(dir: &Path, map: &mut HashMap<String, AdapterConfig>, is_default: bool) {
+fn embedded_default_configs() -> Vec<AdapterConfig> {
+    DEFAULT_ADAPTER_CONFIGS
+        .iter()
+        .map(|contents| parse_adapter_config(contents).expect("embedded debugger config"))
+        .collect()
+}
+
+fn load_from_dir(dir: &Path, map: &mut HashMap<String, AdapterConfig>) {
     let Ok(read_dir) = fs::read_dir(dir) else {
         return;
     };
@@ -102,13 +120,6 @@ fn load_from_dir(dir: &Path, map: &mut HashMap<String, AdapterConfig>, is_defaul
         let Ok(cfg) = load_adapter_config(&path) else {
             continue;
         };
-
-        if is_default
-            && let Some(existing) = map.get_mut(&cfg.id)
-        {
-            merge_missing_fields_from_default(existing, &cfg);
-            continue;
-        }
         map.insert(cfg.id.clone(), cfg);
     }
 }
@@ -180,7 +191,58 @@ pub fn load_adapter_config(path: &Path) -> Result<AdapterConfig, AdapterConfigEr
         return Err(AdapterConfigError::NotFound);
     }
     let contents = fs::read_to_string(path).map_err(AdapterConfigError::Io)?;
-    toml::from_str(&contents).map_err(AdapterConfigError::Parse)
+    parse_adapter_config(&contents)
+}
+
+fn parse_adapter_config(contents: &str) -> Result<AdapterConfig, AdapterConfigError> {
+    toml::from_str(contents).map_err(AdapterConfigError::Parse)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_defaults_are_the_shipped_adapters() {
+        let configs = embedded_default_configs();
+        let ids: Vec<_> = configs.iter().map(|cfg| cfg.id.as_str()).collect();
+        assert!(ids.contains(&"go-delve"));
+        assert!(ids.contains(&"python-debugpy"));
+        assert!(ids.contains(&"rust-codelldb"));
+        assert!(!ids.contains(&"my-adapter"));
+
+        let go = configs.iter().find(|cfg| cfg.id == "go-delve").unwrap();
+        assert_eq!(go.dap_transport, "tcp-server-dials-client");
+        assert_eq!(go.session_cwd_template, "${moduleRoot}");
+        assert!(go.sync_breakpoints_before_auto_continue());
+    }
+
+    #[test]
+    fn partial_user_config_inherits_embedded_go_defaults() {
+        let mut current = parse_adapter_config(
+            r#"
+            id = "go-delve"
+            display_name = "Go (Delve)"
+            command = "dlv"
+            args = ["dap"]
+            file_extensions = ["go"]
+            dap_adapter_type = "dlv-dap"
+            launch_overrides = { output = "keep" }
+            "#,
+        )
+        .unwrap();
+        let default_cfg = embedded_default_configs()
+            .into_iter()
+            .find(|cfg| cfg.id == "go-delve")
+            .unwrap();
+        merge_missing_fields_from_default(&mut current, &default_cfg);
+        assert_eq!(current.dap_transport, "tcp-server-dials-client");
+        assert_eq!(current.session_cwd_template, "${moduleRoot}");
+        assert_eq!(current.auto_continue_stop_reasons, ["entry"]);
+        assert_eq!(current.launch_template["program"], ".");
+        assert_eq!(current.launch_overrides["output"], "keep");
+        assert_eq!(current.health_check_args, ["version"]);
+    }
 }
 
 fn get_config_dir() -> Result<PathBuf, AdapterConfigError> {
