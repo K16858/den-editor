@@ -4,4 +4,14 @@ command = "dlv"
 args = ["dap"]
 file_extensions = ["go"]
 dap_adapter_type = "dlv-dap"
+dap_transport = "tcp-server-dials-client"
+client_addr_arg = "--client-addr"
+session_cwd_template = "${moduleRoot}"
+health_check_args = ["version"]
+not_found_hint = "Go debug adapter 'dlv' is missing. Install: go install github.com/go-delve/delve/cmd/dlv@latest and add GOPATH/bin to PATH."
+auto_continue_stop_reasons = ["entry"]
+sync_breakpoints_before_auto_continue = true
+stacktrace_continue_error_patterns = ["unknown goroutine 1"]
+stacktrace_retry_error_patterns = ["unknown goroutine"]
+launch_template = { name = "Debug current Go package", type = "go", mode = "debug", program = ".", cwd = "${moduleRoot}", stopOnEntry = true }
 launch_overrides = { output = "${tmpDir}/den_dlv_${pid}.exe" }

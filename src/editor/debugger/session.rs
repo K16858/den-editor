@@ -31,8 +31,8 @@ enum DapWriter {
 impl DapSession {
     pub fn start(adapter: &AdapterConfig, working_dir: Option<&Path>) -> io::Result<Self> {
         let (child, writer, mut reader): (Child, DapWriter, Box<dyn Read + Send>) =
-            if adapter.dap_adapter_type.eq_ignore_ascii_case("dlv-dap") {
-                // Delve DAP is TCP-based. Use --client-addr so the server dials us.
+            if adapter.dap_transport.eq_ignore_ascii_case("tcp-server-dials-client") {
+                // Some adapters are TCP-based and dial client address passed via an argument.
                 let listener = TcpListener::bind("127.0.0.1:0")?;
                 let addr = listener.local_addr()?;
                 listener.set_nonblocking(true)?;
@@ -40,7 +40,7 @@ impl DapSession {
                 let mut command = Command::new(&adapter.command);
                 command
                     .args(&adapter.args)
-                    .arg("--client-addr")
+                    .arg(adapter.client_addr_arg())
                     .arg(addr.to_string())
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
@@ -59,7 +59,7 @@ impl DapSession {
                                 let _ = child.kill();
                                 return Err(io::Error::new(
                                     io::ErrorKind::TimedOut,
-                                    "timed out waiting for dlv dap connection",
+                                    "timed out waiting for dap adapter connection",
                                 ));
                             }
                             thread::sleep(Duration::from_millis(20));

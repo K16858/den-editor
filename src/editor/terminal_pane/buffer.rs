@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use super::constants::{LINE_MAX_BYTES, SCROLLBACK_MAX_LINES};
 use crossterm::style::Color;
+use unicode_width::UnicodeWidthChar;
 
 #[derive(Clone)]
 pub struct Cell {
@@ -80,13 +81,41 @@ impl ScrollbackBuffer {
     }
 
     pub fn write_cell(&mut self, cell: Cell) {
-        if self.screen_cols > 0 && self.cursor_col >= self.screen_cols {
+        let Cell { ch, fg, bg, bold } = cell;
+        let width = UnicodeWidthChar::width_cjk(ch).unwrap_or(1);
+        let width = if width == 0 { 1 } else { width };
+        if self.screen_cols > 0 && self.cursor_col + width > self.screen_cols {
             self.cursor_col = 0;
             self.newline();
         }
         self.ensure_cursor_row();
-        self.rows[self.cursor_row].write_at(self.cursor_col, cell);
+        self.rows[self.cursor_row].write_at(
+            self.cursor_col,
+            Cell { ch, fg, bg, bold },
+        );
         self.cursor_col += 1;
+        for _ in 1..width {
+            self.ensure_cursor_row();
+            self.rows[self.cursor_row].write_at(
+                self.cursor_col,
+                Cell {
+                    ch: '\0',
+                    fg,
+                    bg,
+                    bold,
+                },
+            );
+            self.cursor_col += 1;
+        }
+    }
+
+    pub fn tab(&mut self) {
+        let next = self.cursor_col + (8 - self.cursor_col % 8);
+        self.cursor_col = if self.screen_cols > 0 {
+            next.min(self.screen_cols)
+        } else {
+            next
+        };
     }
 
     pub fn newline(&mut self) {
@@ -103,7 +132,18 @@ impl ScrollbackBuffer {
     }
 
     pub fn backspace(&mut self) {
-        self.cursor_col = self.cursor_col.saturating_sub(1);
+        if self.cursor_col == 0 {
+            return;
+        }
+        self.cursor_col -= 1;
+        if self
+            .rows
+            .get(self.cursor_row)
+            .and_then(|row| row.cells.get(self.cursor_col))
+            .is_some_and(|cell| cell.ch == '\0')
+        {
+            self.cursor_col = self.cursor_col.saturating_sub(1);
+        }
     }
 
     /// VT の CSI H / CSI f 用。row, col は 1-based。
@@ -229,5 +269,39 @@ impl ScrollbackBuffer {
             self.cursor_row = self.cursor_row.saturating_sub(excess);
             self.screen_origin = self.screen_origin.saturating_sub(excess);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cell(ch: char) -> Cell {
+        Cell {
+            ch,
+            fg: None,
+            bg: None,
+            bold: false,
+        }
+    }
+
+    #[test]
+    fn tab_moves_to_the_next_stop() {
+        let mut buf = ScrollbackBuffer::new();
+        buf.set_screen_size(80, 24);
+        buf.write_cell(cell('a'));
+        buf.tab();
+        assert_eq!(buf.cursor_col(), 8);
+    }
+
+    #[test]
+    fn wide_character_occupies_two_columns() {
+        let mut buf = ScrollbackBuffer::new();
+        buf.set_screen_size(80, 24);
+        buf.write_cell(cell('あ'));
+        assert_eq!(buf.cursor_col(), 2);
+        let row = buf.row(0).unwrap();
+        assert_eq!(row.cells[0].ch, 'あ');
+        assert_eq!(row.cells[1].ch, '\0');
     }
 }

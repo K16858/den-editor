@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="K16858/redit"
+REPO="K16858/den-editor"
 BINARY_NAME="den"
 INSTALL_DIR="$HOME/.local/bin"
 CONFIG_DIR="$HOME/.config/$BINARY_NAME"

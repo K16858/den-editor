@@ -1,45 +1,9 @@
-#![allow(dead_code)]
-use std::io::{self, Read};
+use portable_pty::{
+    native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize, SlavePty,
+};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
-// ---- Windows: direct ConPTY via win_pty ----
-
-#[cfg(windows)]
-use super::win_pty::WinPty;
-
-#[cfg(windows)]
-pub struct PtySession {
-    inner: WinPty,
-}
-
-#[cfg(windows)]
-impl PtySession {
-    pub fn spawn(cwd: &Path, cols: u16, rows: u16) -> io::Result<(Self, Box<dyn Read + Send>)> {
-        let (pty, reader) = WinPty::spawn(cwd, cols, rows)?;
-        Ok((Self { inner: pty }, Box::new(reader)))
-    }
-
-    pub fn kill(&mut self) {
-        self.inner.kill();
-    }
-
-    pub fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
-        self.inner.write_all(data)
-    }
-
-    pub fn resize(&self, cols: u16, rows: u16) -> io::Result<()> {
-        self.inner.resize(cols, rows)
-    }
-}
-
-// ---- Non-Windows: portable-pty ----
-
-#[cfg(not(windows))]
-use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize, SlavePty};
-#[cfg(not(windows))]
-use std::io::Write;
-
-#[cfg(not(windows))]
 pub struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -48,7 +12,6 @@ pub struct PtySession {
     _slave: Box<dyn SlavePty + Send>,
 }
 
-#[cfg(not(windows))]
 impl PtySession {
     pub fn spawn(cwd: &Path, cols: u16, rows: u16) -> io::Result<(Self, Box<dyn Read + Send>)> {
         let pty_system = native_pty_system();
@@ -61,8 +24,7 @@ impl PtySession {
             })
             .map_err(|e| io::Error::other(e.to_string()))?;
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let mut builder = CommandBuilder::new(&shell);
+        let mut builder = CommandBuilder::new(shell());
         builder.cwd(cwd);
 
         let child: Box<dyn Child + Send + Sync> = pair
@@ -110,5 +72,13 @@ impl PtySession {
                 pixel_height: 0,
             })
             .map_err(|e| io::Error::other(e.to_string()))
+    }
+}
+
+fn shell() -> String {
+    if cfg!(windows) {
+        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+    } else {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
     }
 }

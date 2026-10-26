@@ -28,10 +28,9 @@ use undo::{EditOp, UndoHistory};
 
 type HighlightCache = HashMap<usize, (Vec<HighlightAnnotation>, HighlightState, u64)>;
 
-/// Pairs of opening and closing brackets/quotes for auto-close.
+/// Pairs of opening and closing brackets for auto-close.
 /// TODO: move this to a configuration file so users can customize the pairs.
-const BRACKET_PAIRS: &[(char, char)] =
-    &[('(', ')'), ('[', ']'), ('{', '}'), ('"', '"'), ('\'', '\'')];
+const BRACKET_PAIRS: &[(char, char)] = &[('(', ')'), ('[', ']'), ('{', '}')];
 
 /// Returns the matching closing character for `ch` if it is an opening bracket.
 fn closing_bracket_for(ch: char) -> Option<char> {
@@ -135,8 +134,22 @@ impl View {
         Ok(())
     }
 
-    const GUTTER_WIDTH: usize = 5;
+    const MIN_NUMBER_COLS: usize = 4;
     const GUTTER_PADDING: usize = 2;
+
+    fn number_cols(&self) -> usize {
+        let mut lines = self.buffer.height().max(1);
+        let mut digits = 1;
+        while lines >= 10 {
+            lines /= 10;
+            digits += 1;
+        }
+        digits.max(Self::MIN_NUMBER_COLS)
+    }
+
+    fn gutter_cols(&self) -> usize {
+        1 + self.number_cols() + Self::GUTTER_PADDING
+    }
 
     /// Line number column + optional markers (breakpoint/stopped) in same 7-col layout.
     fn gutter_prefix_parts(&self, line_idx: usize) -> (String, String, bool, bool) {
@@ -154,7 +167,7 @@ impl View {
             "{m}{:>w$}{pad}",
             n,
             m = marker,
-            w = Self::GUTTER_WIDTH - 1,
+            w = self.number_cols(),
             pad = " ".repeat(Self::GUTTER_PADDING)
         );
         // The format contains the marker as first character; split to style it separately.
@@ -165,7 +178,7 @@ impl View {
     #[allow(clippy::too_many_lines)]
     fn render_buffer(&mut self, origin_y: usize) -> Result<(), Error> {
         let Size { height, width } = self.size;
-        let gutter_total = Self::GUTTER_WIDTH + Self::GUTTER_PADDING;
+        let gutter_total = self.gutter_cols();
         let content_width = width.saturating_sub(gutter_total);
         let top = self.scroll_offset.row;
 
@@ -353,7 +366,7 @@ impl View {
                     )?;
                 }
             } else {
-                let empty_prefix = " ".repeat(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
+                let empty_prefix = " ".repeat(self.gutter_cols());
                 self.render_line(draw_row, &format!("{empty_prefix}~"))?;
                 state = HighlightState::default();
             }
@@ -363,7 +376,7 @@ impl View {
 
     fn draw_welcome_message_at(&self, at: usize, width: usize) -> Result<(), Error> {
         let mut welcome_message = format!("{NAME} -- version {VERSION}");
-        let gutter_total = Self::GUTTER_WIDTH + Self::GUTTER_PADDING;
+        let gutter_total = self.gutter_cols();
         let content_width = width.saturating_sub(gutter_total);
         let len = welcome_message.len();
         let prefix = " ".repeat(gutter_total);
@@ -380,7 +393,7 @@ impl View {
     }
 
     fn draw_empty_row(&self, at: usize) -> Result<(), Error> {
-        let empty_prefix = " ".repeat(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
+        let empty_prefix = " ".repeat(self.gutter_cols());
         self.render_line(at, &format!("{empty_prefix}~"))?;
         Ok(())
     }
@@ -403,7 +416,7 @@ impl View {
             rel.row = 0;
         }
 
-        let gutter_total = Self::GUTTER_WIDTH + Self::GUTTER_PADDING;
+        let gutter_total = self.gutter_cols();
         Position {
             col: rel.col + gutter_total + self.col_offset,
             row: rel.row,
@@ -425,8 +438,9 @@ impl View {
     pub fn handle_move_command(&mut self, move_cmd: Move) {
         let Size { height, .. } = self.size;
 
-        let old_line_idx = self.text_location.line_idx;
+        let old_location = self.text_location;
         let old_scroll_row = self.scroll_offset.row;
+        let old_scroll_col = self.scroll_offset.col;
 
         match move_cmd.direction {
             MoveDirection::ScrollUp => {
@@ -469,15 +483,10 @@ impl View {
         }
 
         self.scroll_text_location_into_view();
-        // Note:
-        // Redraw conditions:
-        // - Selection operation (selection range changes)
-        // - Line changed (current line highlight or cursor line content changes)
-        // - Scroll position changed (displayed lines change)
-        let line_changed = self.text_location.line_idx != old_line_idx;
-        let scroll_changed = self.scroll_offset.row != old_scroll_row;
-
-        if move_cmd.is_selection || line_changed || scroll_changed {
+        let moved = self.text_location != old_location
+            || self.scroll_offset.row != old_scroll_row
+            || self.scroll_offset.col != old_scroll_col;
+        if move_cmd.is_selection || moved {
             self.mark_redraw(true);
         }
     }
@@ -489,8 +498,8 @@ impl View {
 
     fn move_down(&mut self, step: usize) {
         self.text_location.line_idx = self.text_location.line_idx.saturating_add(step);
-        self.snap_to_valid_grapheme();
         self.snap_to_valid_line();
+        self.snap_to_valid_grapheme();
     }
 
     fn move_right(&mut self) {
@@ -501,7 +510,7 @@ impl View {
             .map_or(0, Line::grapheme_count);
         if self.text_location.grapheme_idx < line_width {
             self.text_location.grapheme_idx += 1;
-        } else {
+        } else if self.text_location.line_idx + 1 < self.buffer.height() {
             self.move_to_start_of_line();
             self.move_down(1);
         }
@@ -616,7 +625,7 @@ impl View {
         let content_width = self
             .size
             .width
-            .saturating_sub(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
+            .saturating_sub(self.gutter_cols());
         let offset_changed = if to < self.scroll_offset.col {
             self.scroll_offset.col = to;
             true
@@ -724,11 +733,9 @@ impl View {
 
         self.text_location = at;
         self.selection = None;
-        if self.buffer.is_file_loaded() {
-            self.undo_history.clear_redo();
-            if let Some(text) = deleted_text {
-                self.undo_history.push_edit(EditOp::Delete { at, text });
-            }
+        self.undo_history.clear_redo();
+        if let Some(text) = deleted_text {
+            self.undo_history.push_edit(EditOp::Delete { at, text });
         }
         self.buffer.modified = true;
         self.cache_version += 1;
@@ -787,9 +794,9 @@ impl View {
     }
 
     fn cut_selection(&mut self) -> Result<(), &'static str> {
-        let result = self.copy_selection();
+        self.copy_selection()?;
         let _ = self.delete_selection();
-        result
+        Ok(())
     }
 
     /// Inserts the given text at the current cursor (or replaces selection).
@@ -802,26 +809,15 @@ impl View {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         let _ = self.delete_selection();
 
-        if self.buffer.is_file_loaded() {
-            self.undo_history.clear_redo();
-            let at = self.text_location;
-            let new_loc = self.buffer.insert_string(at, &text);
-            self.text_location = new_loc;
-            self.undo_history.push_edit(EditOp::Insert {
-                at,
-                text: text.to_string(),
-                cursor_after: new_loc,
-            });
-        } else {
-            for (idx, line) in text.split('\n').enumerate() {
-                if idx > 0 {
-                    self.insert_newline();
-                }
-                for ch in line.chars() {
-                    self.insert_char(ch);
-                }
-            }
-        }
+        self.undo_history.clear_redo();
+        let at = self.text_location;
+        let new_loc = self.buffer.insert_string(at, &text);
+        self.text_location = new_loc;
+        self.undo_history.push_edit(EditOp::Insert {
+            at,
+            text: text.to_string(),
+            cursor_after: new_loc,
+        });
         self.cache_version += 1;
         self.mark_redraw(true);
     }
@@ -855,7 +851,7 @@ impl View {
     }
 
     pub fn undo(&mut self) {
-        if !self.buffer.is_file_loaded() || !self.undo_history.has_undo() {
+        if !self.undo_history.has_undo() {
             return;
         }
         let Some(op) = self.undo_history.pop_undo() else {
@@ -886,13 +882,13 @@ impl View {
             }
         }
         self.undo_history.push_redo(op);
-        self.buffer.modified = true;
+        self.buffer.sync_modified_to_saved();
         self.cache_version += 1;
         self.mark_redraw(true);
     }
 
     pub fn redo(&mut self) {
-        if !self.buffer.is_file_loaded() || !self.undo_history.has_redo() {
+        if !self.undo_history.has_redo() {
             return;
         }
         let Some(op) = self.undo_history.pop_redo() else {
@@ -933,7 +929,7 @@ impl View {
             }
         }
         self.undo_history.push_edit(op);
-        self.buffer.modified = true;
+        self.buffer.sync_modified_to_saved();
         self.cache_version += 1;
         self.mark_redraw(true);
     }
@@ -963,9 +959,6 @@ impl View {
     const INDENT: &'static str = "    "; // 4 spaces; TODO: make configurable
 
     fn indent_selection_or_line(&mut self) {
-        if !self.buffer.is_file_loaded() {
-            return;
-        }
         let line_range = self.selected_line_range();
         self.undo_history.clear_redo();
 
@@ -1005,9 +998,6 @@ impl View {
     }
 
     fn dedent_selection_or_line(&mut self) {
-        if !self.buffer.is_file_loaded() {
-            return;
-        }
         let line_range = self.selected_line_range();
         self.undo_history.clear_redo();
 
@@ -1132,24 +1122,20 @@ impl View {
             .get(self.text_location.line_idx)
             .map_or(0, Line::grapheme_count);
 
-        if self.buffer.is_file_loaded() {
-            self.undo_history.clear_redo();
-            let at = self.text_location;
-            self.buffer.insert_string(at, &text_to_insert);
-            // For auto-close pairs, cursor sits between the pair (one step right of `at`).
-            // For normal single-char insertion, that is also one step right of `at`.
-            let cursor_after = Location {
-                grapheme_idx: at.grapheme_idx + 1,
-                line_idx: at.line_idx,
-            };
-            self.undo_history.push_edit(EditOp::Insert {
-                at,
-                text: text_to_insert,
-                cursor_after,
-            });
-        } else {
-            self.buffer.insert_char(character, self.text_location);
-        }
+        self.undo_history.clear_redo();
+        let at = self.text_location;
+        self.buffer.insert_string(at, &text_to_insert);
+        // For auto-close pairs, cursor sits between the pair (one step right of `at`).
+        // For normal single-char insertion, that is also one step right of `at`.
+        let cursor_after = Location {
+            grapheme_idx: at.grapheme_idx + 1,
+            line_idx: at.line_idx,
+        };
+        self.undo_history.push_edit(EditOp::Insert {
+            at,
+            text: text_to_insert,
+            cursor_after,
+        });
 
         let new_len = self
             .buffer
@@ -1180,20 +1166,18 @@ impl View {
         let _ = self.delete_selection(); // pushes a Delete op
         let delete_op = self.undo_history.pop_last_edit();
 
-        if self.buffer.is_file_loaded() {
-            let cursor_after = self.buffer.insert_string(at, &wrapped);
-            self.text_location = cursor_after;
-            let insert_op = EditOp::Insert {
-                at,
-                text: wrapped,
-                cursor_after,
-            };
-            let group_op = match delete_op {
-                Some(del) => EditOp::Group(vec![del, insert_op]),
-                None => insert_op,
-            };
-            self.undo_history.push_edit(group_op);
-        }
+        let cursor_after = self.buffer.insert_string(at, &wrapped);
+        self.text_location = cursor_after;
+        let insert_op = EditOp::Insert {
+            at,
+            text: wrapped,
+            cursor_after,
+        };
+        let group_op = match delete_op {
+            Some(del) => EditOp::Group(vec![del, insert_op]),
+            None => insert_op,
+        };
+        self.undo_history.push_edit(group_op);
         self.cache_version += 1;
         self.mark_redraw(true);
     }
@@ -1209,23 +1193,15 @@ impl View {
             .unwrap_or_default();
         let insert_text = format!("\n{indent}");
 
-        if self.buffer.is_file_loaded() {
-            self.undo_history.clear_redo();
-            let at = self.text_location;
-            let cursor_after = self.buffer.insert_string(at, &insert_text);
-            self.text_location = cursor_after;
-            self.undo_history.push_edit(EditOp::Insert {
-                at,
-                text: insert_text,
-                cursor_after,
-            });
-        } else {
-            self.buffer.insert_newline(self.text_location);
-            self.text_location = Location {
-                line_idx: self.text_location.line_idx + 1,
-                grapheme_idx: 0,
-            };
-        }
+        self.undo_history.clear_redo();
+        let at = self.text_location;
+        let cursor_after = self.buffer.insert_string(at, &insert_text);
+        self.text_location = cursor_after;
+        self.undo_history.push_edit(EditOp::Insert {
+            at,
+            text: insert_text,
+            cursor_after,
+        });
         self.scroll_text_location_into_view();
         self.cache_version += 1;
         self.mark_redraw(true);
@@ -1238,6 +1214,7 @@ impl View {
         self.scroll_offset = Position::default();
         self.selection = None;
         self.search_info = None;
+        self.debug_stop_line = None;
         self.undo_history.clear_all();
         self.highlight_cache.clear();
         self.cache_version += 1;
@@ -1251,14 +1228,12 @@ impl View {
         }
 
         if self.text_location.line_idx != 0 || self.text_location.grapheme_idx != 0 {
-            if self.buffer.is_file_loaded() {
-                self.undo_history.clear_redo();
-            }
+            self.undo_history.clear_redo();
             self.handle_move_command(Move::left(false));
             let at = self.text_location;
             let text = self.buffer.content_deleted_at(at).unwrap_or_default();
             self.buffer.delete(at);
-            if self.buffer.is_file_loaded() && !text.is_empty() {
+            if !text.is_empty() {
                 self.undo_history.push_edit(EditOp::Delete { at, text });
             }
             self.cache_version += 1;
@@ -1274,7 +1249,7 @@ impl View {
         let at = self.text_location;
         let text = self.buffer.content_deleted_at(at).unwrap_or_default();
         self.buffer.delete(self.text_location);
-        if self.buffer.is_file_loaded() && !text.is_empty() {
+        if !text.is_empty() {
             self.undo_history.clear_redo();
             self.undo_history.push_edit(EditOp::Delete { at, text });
         }
@@ -1327,9 +1302,8 @@ impl View {
 
     /// Replaces all occurrences of `query` with `replacement`.
     /// Returns the number of replacements made.
-    /// Note: this operation is not recorded in the undo history.
     pub fn replace_all(&mut self, query: &str, replacement: &str) -> usize {
-        if query.is_empty() || !self.buffer.is_file_loaded() {
+        if query.is_empty() {
             return 0;
         }
         let matches = self.buffer.find_all_matches(query);
@@ -1338,11 +1312,22 @@ impl View {
             return 0;
         }
         self.undo_history.clear_redo();
-        // Replace from end to start to preserve indices of earlier matches.
+        let mut ops = Vec::new();
         for &at in matches.iter().rev() {
             self.buffer.delete_span(at, query);
-            self.buffer.insert_string(at, replacement);
+            let cursor_after = self.buffer.insert_string(at, replacement);
+            ops.push(EditOp::Delete {
+                at,
+                text: query.to_string(),
+            });
+            ops.push(EditOp::Insert {
+                at,
+                text: replacement.to_string(),
+                cursor_after,
+            });
         }
+        self.undo_history.push_edit(EditOp::Group(ops));
+        self.buffer.sync_modified_to_saved();
         self.cache_version += 1;
         self.mark_redraw(true);
         count
@@ -1356,16 +1341,9 @@ impl View {
     }
 
     fn get_search_query(&self) -> Option<&Line> {
-        let query = self
-            .search_info
+        self.search_info
             .as_ref()
-            .and_then(|search_info| search_info.query.as_ref());
-
-        debug_assert!(
-            query.is_some(),
-            "Attempting to search with malformed searchinfo present"
-        );
-        query
+            .and_then(|search_info| search_info.query.as_ref())
     }
 
     fn search_in_direction(&mut self, from: Location, direction: SearchDirection) {
@@ -1400,9 +1378,25 @@ impl View {
         self.search_in_direction(self.text_location, SearchDirection::Backward);
     }
 
+    /// `None` when there is no query. `"No matches."` when the cursor is not on a hit.
+    pub fn search_summary(&self) -> Option<String> {
+        let query = self.get_search_query()?;
+        if query.is_empty() {
+            return None;
+        }
+        let matches = self.buffer.find_all_matches(query);
+        if matches.is_empty() {
+            return Some("No matches.".to_string());
+        }
+        match matches.iter().position(|loc| *loc == self.text_location) {
+            Some(index) => Some(format!("Match {}/{}", index + 1, matches.len())),
+            None => Some("No matches.".to_string()),
+        }
+    }
+
     fn center_text_location(&mut self) {
         let Size { height, width } = self.size;
-        let content_width = width.saturating_sub(Self::GUTTER_WIDTH + Self::GUTTER_PADDING);
+        let content_width = width.saturating_sub(self.gutter_cols());
         let Position { row, col } = self.text_location_to_position();
         let vertical_mid = height.div_ceil(2);
         let horizontal_mid = content_width.div_ceil(2);
@@ -1431,5 +1425,156 @@ impl UIComponent for View {
         } else {
             self.render_buffer(origin_y)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn movement_at_end_of_document_stays_put() {
+        let mut view = View::default();
+        view.buffer.lines = vec![Line::from("abc"), Line::from("xyz")];
+        view.text_location = Location {
+            line_idx: 1,
+            grapheme_idx: 2,
+        };
+        view.move_down(1);
+        assert_eq!(
+            view.text_location,
+            Location {
+                line_idx: 1,
+                grapheme_idx: 2,
+            }
+        );
+        view.text_location.grapheme_idx = 3;
+        view.move_right();
+        assert_eq!(
+            view.text_location,
+            Location {
+                line_idx: 1,
+                grapheme_idx: 3,
+            }
+        );
+        view.text_location = Location {
+            line_idx: 0,
+            grapheme_idx: 3,
+        };
+        view.move_right();
+        assert_eq!(
+            view.text_location,
+            Location {
+                line_idx: 1,
+                grapheme_idx: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn horizontal_move_marks_redraw() {
+        let mut view = View::default();
+        view.size = Size { width: 80, height: 24 };
+        view.buffer.lines = vec![Line::from("abc")];
+        view.mark_redraw(false);
+        view.handle_move_command(Move::right(false));
+        assert_eq!(view.text_location.grapheme_idx, 1);
+        assert!(view.needs_redraw());
+    }
+
+    #[test]
+    fn undo_to_saved_content_clears_modified() {
+        let dir = std::env::temp_dir().join(format!("den-undo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "hi\n").unwrap();
+        let mut view = View::default();
+        view.load(path.to_str().unwrap()).unwrap();
+        assert!(!view.get_status().is_modified);
+        view.handle_edit_command(Edit::Insert('x'));
+        assert!(view.get_status().is_modified);
+        view.undo();
+        assert!(!view.get_status().is_modified);
+        view.redo();
+        assert!(view.get_status().is_modified);
+        view.undo();
+        assert!(!view.get_status().is_modified);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn quote_is_not_auto_closed() {
+        let mut view = View::default();
+        view.handle_edit_command(Edit::Insert('\''));
+        assert_eq!(&*view.buffer.lines[0], "'");
+        view.handle_edit_command(Edit::Insert('"'));
+        assert_eq!(&*view.buffer.lines[0], "'\"");
+    }
+
+    #[test]
+    fn untitled_buffer_autoclose_and_undo() {
+        let mut view = View::default();
+        view.handle_edit_command(Edit::Insert('('));
+        assert_eq!(&*view.buffer.lines[0], "()");
+        view.undo();
+        assert_eq!(&*view.buffer.lines[0], "");
+    }
+
+    #[test]
+    fn gutter_grows_past_four_digits() {
+        let mut view = View::default();
+        assert_eq!(view.gutter_cols(), 7);
+        view.buffer.lines = vec![Line::default(); 10_000];
+        assert_eq!(view.number_cols(), 5);
+        assert_eq!(view.gutter_cols(), 8);
+    }
+
+    #[test]
+    fn load_clears_debug_stop_line() {
+        let dir = std::env::temp_dir().join(format!("den-stop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "hi\n").unwrap();
+        let mut view = View::default();
+        view.set_debug_stop_line(Some(1));
+        view.load(path.to_str().unwrap()).unwrap();
+        assert_eq!(view.debug_stop_line, None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn search_arrow_before_query_does_not_panic() {
+        let mut view = View::default();
+        view.buffer.lines = vec![Line::from("abc")];
+        view.enter_search();
+        view.search_next();
+        view.search_prev();
+        assert_eq!(view.search_summary(), None);
+        assert_eq!(view.text_location.grapheme_idx, 0);
+    }
+
+    #[test]
+    fn search_summary_reports_the_hit() {
+        let mut view = View::default();
+        view.paste_text("ab ab");
+        view.enter_search();
+        view.search("");
+        assert_eq!(view.search_summary(), None);
+        view.search("z");
+        assert_eq!(view.search_summary().as_deref(), Some("No matches."));
+        view.search("ab");
+        assert_eq!(view.search_summary().as_deref(), Some("Match 1/2"));
+        view.search_next();
+        assert_eq!(view.search_summary().as_deref(), Some("Match 2/2"));
+    }
+
+    #[test]
+    fn replace_all_undoes_as_one_step() {
+        let mut view = View::default();
+        view.paste_text("a a");
+        assert_eq!(view.replace_all("a", "b"), 2);
+        assert_eq!(&*view.buffer.lines[0], "b b");
+        view.undo();
+        assert_eq!(&*view.buffer.lines[0], "a a");
     }
 }
