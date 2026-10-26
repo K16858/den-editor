@@ -264,25 +264,18 @@ impl Line {
     }
 
     pub fn insert_char(&mut self, character: char, at: usize) {
-        if let Some(fragment) = self.fragments.get(at) {
-            self.string.insert(fragment.start, character);
-        } else {
-            self.string.push(character);
-        }
+        let mut buf = [0u8; 4];
+        self.insert_str(at, character.encode_utf8(&mut buf));
+    }
 
+    pub fn insert_str(&mut self, at: usize, text: &str) {
+        let byte = self.grapheme_to_byte_idx(at);
+        self.string.insert_str(byte, text);
         self.rebuild_fragments();
     }
 
     pub fn width(&self) -> usize {
         self.width_until(self.grapheme_count())
-    }
-
-    pub fn append_char(&mut self, character: char) {
-        self.insert_char(character, self.grapheme_count());
-    }
-
-    pub fn delete_last(&mut self) {
-        self.delete(self.grapheme_count().saturating_sub(1));
     }
 
     pub fn delete(&mut self, at: usize) {

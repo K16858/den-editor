@@ -61,6 +61,7 @@ const DEFAULT_ADAPTER_CONFIGS: &[&str] = &[
     include_str!("../../../docs/examples/default/debuggers/go.toml"),
     include_str!("../../../docs/examples/default/debuggers/python.toml"),
     include_str!("../../../docs/examples/default/debuggers/rust.toml"),
+    include_str!("../../../docs/examples/default/debuggers/mips.toml"),
 ];
 
 fn default_health_check_args() -> Vec<String> {
@@ -89,6 +90,21 @@ impl AdapterConfig {
             resolved.args = args.clone();
         }
         resolved
+    }
+
+    /// Replaces `${file}` and the other debug placeholders in `args`.
+    /// Longer names are replaced first so `${file}` does not consume `${fileStem}`.
+    pub fn expand_args(&mut self, placeholders: &HashMap<&str, String>) {
+        let mut keys: Vec<&str> = placeholders.keys().copied().collect();
+        keys.sort_by_key(|key| std::cmp::Reverse(key.len()));
+        for arg in &mut self.args {
+            for key in &keys {
+                let Some(value) = placeholders.get(key) else {
+                    continue;
+                };
+                *arg = arg.replace(key, value);
+            }
+        }
     }
 }
 
@@ -232,7 +248,15 @@ mod tests {
         assert!(ids.contains(&"go-delve"));
         assert!(ids.contains(&"python-debugpy"));
         assert!(ids.contains(&"rust-codelldb"));
+        assert!(ids.contains(&"pluspim"));
         assert!(!ids.contains(&"my-adapter"));
+
+        let mips = configs.iter().find(|cfg| cfg.id == "pluspim").unwrap();
+        assert_eq!(mips.file_extensions, ["asm"]);
+        assert_eq!(mips.args, ["--debug", "${file}"]);
+        assert_eq!(mips.dap_transport, "tcp-server-dials-client");
+        assert_eq!(mips.client_addr_arg(), "--connect");
+        assert_eq!(mips.health_check_args(), ["--help"]);
 
         let go = configs.iter().find(|cfg| cfg.id == "go-delve").unwrap();
         assert_eq!(go.dap_transport, "tcp-server-dials-client");
@@ -313,6 +337,25 @@ mod tests {
         let resolved = adapter.with_fallback_launch();
         assert_eq!(resolved.command, "py");
         assert_eq!(resolved.args, ["-m", "debugpy.adapter"]);
+    }
+
+    #[test]
+    fn expand_args_replaces_file_without_touching_file_stem() {
+        let mut adapter = parse_adapter_config(
+            r#"
+            id = "pluspim"
+            display_name = "MIPS"
+            command = "PlusPim"
+            args = ["--debug", "${file}", "${fileStem}"]
+            "#,
+        )
+        .unwrap();
+        let placeholders = HashMap::from([
+            ("${file}", "C:/proj/main.asm".to_string()),
+            ("${fileStem}", "main".to_string()),
+        ]);
+        adapter.expand_args(&placeholders);
+        assert_eq!(adapter.args, ["--debug", "C:/proj/main.asm", "main"]);
     }
 }
 

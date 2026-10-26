@@ -93,6 +93,7 @@ impl VtParser {
                 b'\n' => buf.newline(),
                 b'\r' => buf.carriage_return(),
                 0x08 => buf.backspace(),
+                0x09 => buf.tab(),
                 0x07 | 0x0b | 0x0c => {}
                 _ if b >= 0x20 => {
                     if let Some(ch) = self.utf8.feed(b) {

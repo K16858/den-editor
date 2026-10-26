@@ -14,7 +14,7 @@ use crossterm::terminal::{
 };
 use crossterm::{Command, queue};
 use std::io::{Error, Write, stdout};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub struct Terminal {}
 
@@ -203,12 +203,7 @@ impl Terminal {
     }
 
     pub fn print_inverted_row(row: usize, line_text: &str) -> Result<(), Error> {
-        let width = Self::size()?.width;
-        Self::print_row(
-            row,
-            0,
-            &format!("{Reverse}{line_text:width$.width$}{Reset}"),
-        )
+        Self::print_row(row, 0, &format!("{Reverse}{line_text}{Reset}"))
     }
 
     pub fn print(string: &str) -> Result<(), Error> {
@@ -251,5 +246,81 @@ impl Terminal {
     fn queue_command<T: Command>(command: T) -> Result<(), Error> {
         queue!(stdout(), command)?;
         Ok(())
+    }
+}
+
+/// Cuts `text` to `cols` display columns, keeping the start. Adds `…` when cut.
+pub fn clip_display(text: &str, cols: usize) -> String {
+    clip_display_side(text, cols, false)
+}
+
+/// Cuts `text` to `cols` display columns, keeping the end. Adds `…` when cut.
+pub fn clip_display_end(text: &str, cols: usize) -> String {
+    clip_display_side(text, cols, true)
+}
+
+fn clip_display_side(text: &str, cols: usize, keep_end: bool) -> String {
+    if cols == 0 {
+        return String::new();
+    }
+    if text.width() <= cols {
+        return text.to_string();
+    }
+    let budget = cols.saturating_sub(1);
+    let mut chars = Vec::new();
+    let mut used = 0usize;
+    if keep_end {
+        for ch in text.chars().rev() {
+            if !push_col(&mut chars, &mut used, budget, ch) {
+                break;
+            }
+        }
+        chars.reverse();
+        let mut out = String::from("…");
+        out.extend(chars);
+        out
+    } else {
+        for ch in text.chars() {
+            if !push_col(&mut chars, &mut used, budget, ch) {
+                break;
+            }
+        }
+        let mut out: String = chars.into_iter().collect();
+        out.push('…');
+        out
+    }
+}
+
+fn push_col(chars: &mut Vec<char>, used: &mut usize, budget: usize, ch: char) -> bool {
+    let width = ch.width().unwrap_or(0);
+    if width > 0 && *used + width > budget {
+        return false;
+    }
+    chars.push(ch);
+    *used += width;
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clip_display, clip_display_end};
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn clip_keeps_wide_characters_inside_the_column_budget() {
+        let clipped = clip_display("あいう", 3);
+        assert!(clipped.width() <= 3);
+        assert_eq!(clipped, "あ…");
+    }
+
+    #[test]
+    fn clip_end_keeps_the_tail() {
+        assert_eq!(clip_display_end("abcdef", 4), "…def");
+    }
+
+    #[test]
+    fn short_text_is_unchanged() {
+        assert_eq!(clip_display("ab", 4), "ab");
+        assert_eq!(clip_display_end("ab", 4), "ab");
     }
 }

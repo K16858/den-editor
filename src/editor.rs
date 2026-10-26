@@ -46,6 +46,17 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const QUIT_TIMES: u8 = 2;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DiscardKind {
+    Open,
+    Debug,
+}
+
+struct PendingDiscard {
+    path: String,
+    kind: DiscardKind,
+}
+
 #[derive(Eq, PartialEq, Default)]
 enum PromptType {
     Search,
@@ -105,6 +116,7 @@ pub struct Editor {
     debug_paused: bool,
     current_variables_reference: Option<i64>,
     variables_reference_stack: Vec<i64>,
+    pending_discard: Option<PendingDiscard>,
 }
 
 impl Editor {
@@ -174,6 +186,7 @@ impl Editor {
             debug_paused: false,
             current_variables_reference: None,
             variables_reference_stack: Vec::new(),
+            pending_discard: None,
         };
 
         let size = Terminal::size().unwrap_or_default();
@@ -293,6 +306,16 @@ impl Editor {
                         return;
                     }
                 }
+                if *modifiers == KeyModifiers::NONE {
+                    if *code == KeyCode::PageUp {
+                        self.terminal_pane.scroll_page_up();
+                        return;
+                    }
+                    if *code == KeyCode::PageDown {
+                        self.terminal_pane.scroll_page_down();
+                        return;
+                    }
+                }
                 let bytes = key_event_to_bytes(*code, *modifiers);
                 if !bytes.is_empty() {
                     let _ = self.terminal_pane.write(&bytes);
@@ -319,6 +342,9 @@ impl Editor {
     }
 
     fn process_command(&mut self, command: Command) {
+        if !self.keeps_discard_arm(&command) && self.pending_discard.take().is_some() {
+            self.update_message("");
+        }
         if let System(Resize(size)) = command {
             self.resize(size);
             return;
@@ -552,18 +578,65 @@ impl Editor {
     fn open_from_sidebar_selection(&mut self) {
         if let Some(path) = self.sidebar.take_pending_open() {
             let s = path.to_string_lossy();
-            match self.view.load(&s) {
-                Ok(()) => {
-                    self.sidebar_focus = false;
-                    self.refresh_status();
-                    self.update_message("");
-                }
-                Err(e) => {
-                    self.update_message(&format!("ERROR: Could not open file: {e}"));
-                }
+            if self.load_if_clean(&s) {
+                self.sidebar_focus = false;
             }
             self.view.mark_redraw(true);
             self.sidebar.mark_redraw(true);
+        }
+    }
+
+    fn keeps_discard_arm(&self, command: &Command) -> bool {
+        match (&self.prompt_type, command) {
+            (PromptType::None, Edit(InsertNewline))
+                if self.sidebar_visible
+                    && self.sidebar_focus
+                    && self.sidebar_mode == SidebarMode::Explorer =>
+            {
+                true
+            }
+            (PromptType::CreateFile, Edit(InsertNewline)) => true,
+            (PromptType::None, System(NextFrame | PrevFrame)) => true,
+            _ => false,
+        }
+    }
+
+    /// True when the buffer is clean, or this path was already armed for `kind`.
+    fn discard_confirmed(&mut self, path: &str, kind: DiscardKind) -> bool {
+        if !self.view.get_status().is_modified {
+            self.pending_discard = None;
+            return true;
+        }
+        self.pending_discard
+            .as_ref()
+            .is_some_and(|pending| pending.path == path && pending.kind == kind)
+    }
+
+    fn arm_discard(&mut self, path: &str, kind: DiscardKind) {
+        self.pending_discard = Some(PendingDiscard {
+            path: path.to_string(),
+            kind,
+        });
+        self.update_message("Unsaved changes. Repeat to discard and open.");
+    }
+
+    /// Replaces the buffer when it is clean, or when this open is the confirming repeat.
+    fn load_if_clean(&mut self, path: &str) -> bool {
+        if !self.discard_confirmed(path, DiscardKind::Open) {
+            self.arm_discard(path, DiscardKind::Open);
+            return false;
+        }
+        match self.view.load(path) {
+            Ok(()) => {
+                self.pending_discard = None;
+                self.refresh_status();
+                self.update_message("");
+                true
+            }
+            Err(e) => {
+                self.update_message(&format!("ERROR: Could not open file: {e}"));
+                false
+            }
         }
     }
 
@@ -594,13 +667,18 @@ impl Editor {
             self.update_message("No debug adapter for current file.");
             return;
         };
-        let adapter = match Self::ensure_adapter_ready(&adapter) {
+        let mut adapter = match Self::ensure_adapter_ready(&adapter) {
             Ok(adapter) => adapter,
             Err(msg) => {
                 self.update_message(&msg);
                 return;
             }
         };
+        if let Some(path) = self.view.file_path() {
+            let placeholders =
+                Self::build_debug_placeholders(&path, self.sidebar.workspace_root());
+            adapter.expand_args(&placeholders);
+        }
         let debug_cwd = if adapter.session_cwd_template.is_empty() {
             None
         } else {
@@ -625,12 +703,14 @@ impl Editor {
                         "pathFormat": "path"
                     }),
                 ) {
+                    session.stop();
                     self.update_message(&format!("Debug init error: {e}"));
                     return;
                 }
                 let launch_args = match self.build_launch_arguments(&adapter) {
                     Ok(args) => args,
                     Err(msg) => {
+                        session.stop();
                         self.update_message(&msg);
                         return;
                     }
@@ -985,20 +1065,14 @@ impl Editor {
                     })
                     .unwrap_or_default();
                 let frame_id = frames.first().map_or(0, |f| f.id);
-                let pause_line = frames.first().map(|f| f.line);
-                let is_current_file = frames.first().is_some_and(|f| {
-                    self.view.file_path().is_some_and(|path| {
-                        let current = Self::dap_source_path_string(&path);
-                        current == f.source_path
-                    })
-                });
+                let pause_line = frames.first().map(|f| f.line).unwrap_or(0);
+                let source_path = frames
+                    .first()
+                    .map(|f| f.source_path.clone())
+                    .unwrap_or_default();
                 self.debug_state.stack_frames = frames;
                 self.debug_state.selected_frame_idx = 0;
-                if is_current_file {
-                    self.view.set_debug_stop_line(pause_line);
-                } else {
-                    self.view.set_debug_stop_line(None);
-                }
+                self.show_debug_location(&source_path, pause_line);
                 if frame_id != 0 {
                     self.request_scopes(frame_id);
                 }
@@ -1241,6 +1315,54 @@ impl Editor {
         }
     }
 
+    fn same_source_path(local: &Path, remote: &str) -> bool {
+        if remote.is_empty() {
+            return false;
+        }
+        let local = Self::dap_source_path_string(local);
+        let remote = Self::dap_source_path_string(Path::new(remote));
+        #[cfg(windows)]
+        return local
+            .replace('/', "\\")
+            .eq_ignore_ascii_case(&remote.replace('/', "\\"));
+        #[cfg(not(windows))]
+        return local == remote;
+    }
+
+    fn breakpoint_key(path: &Path) -> PathBuf {
+        PathBuf::from(Self::dap_source_path_string(path))
+    }
+
+    /// Shows `line` when `source_path` is the current file, or opens it when the buffer is clean.
+    fn show_debug_location(&mut self, source_path: &str, line: i64) -> bool {
+        if source_path.is_empty() {
+            self.view.set_debug_stop_line(None);
+            return false;
+        }
+        if self
+            .view
+            .file_path()
+            .is_some_and(|path| Self::same_source_path(&path, source_path))
+        {
+            self.view.set_debug_stop_line(Some(line));
+            return true;
+        }
+        if !self.discard_confirmed(source_path, DiscardKind::Debug) {
+            self.view.set_debug_stop_line(None);
+            self.arm_discard(source_path, DiscardKind::Debug);
+            return false;
+        }
+        if self.view.load(source_path).is_ok() {
+            self.pending_discard = None;
+            self.view.set_debug_stop_line(Some(line));
+            self.refresh_status();
+            true
+        } else {
+            self.view.set_debug_stop_line(None);
+            false
+        }
+    }
+
     fn resolve_go_launch_dir(file_path: &Path, workspace: &Path) -> PathBuf {
         // Prefer the nearest directory containing go.mod starting from the active file directory.
         let mut dir = file_path
@@ -1424,7 +1546,8 @@ impl Editor {
         };
         let line =
             i64::try_from(self.view.current_line_index().saturating_add(1)).unwrap_or(i64::MAX);
-        let entry = self.breakpoints.entry(path.clone()).or_default();
+        let key = Self::breakpoint_key(&path);
+        let entry = self.breakpoints.entry(key.clone()).or_default();
         let added = if let Some(pos) = entry.iter().position(|l| *l == line) {
             entry.remove(pos);
             false
@@ -1441,7 +1564,7 @@ impl Editor {
                     .send_request(
                         "setBreakpoints",
                         json!({
-                            "source": { "path": Self::dap_source_path_string(&path) },
+                            "source": { "path": Self::dap_source_path_string(&key) },
                             "breakpoints": lines.iter().map(|line| json!({ "line": line })).collect::<Vec<_>>()
                         }),
                     )
@@ -1568,21 +1691,24 @@ impl Editor {
         let current = self
             .debug_state
             .selected_frame_idx
-            .min(len.saturating_sub(1)) as isize;
-        let next = (current + delta).rem_euclid(len as isize) as usize;
-        self.debug_state.selected_frame_idx = next;
-        if let Some(frame) = self.debug_state.stack_frames.get(next).cloned() {
+            .min(len.saturating_sub(1));
+        if let Some(frame) = self.debug_state.stack_frames.get(current).cloned()
+            && self.discard_confirmed(&frame.source_path, DiscardKind::Debug)
+            && self.view.get_status().is_modified
+        {
+            if self.show_debug_location(&frame.source_path, frame.line) {
+                self.update_message(&format!("Selected frame #{current}: {}", frame.name));
+            }
+            return;
+        }
+        let next = (current as isize + delta).rem_euclid(len as isize) as usize;
+        let Some(frame) = self.debug_state.stack_frames.get(next).cloned() else {
+            return;
+        };
+        if self.show_debug_location(&frame.source_path, frame.line) {
+            self.debug_state.selected_frame_idx = next;
             if frame.id != 0 {
                 self.request_scopes(frame.id);
-            }
-            if self
-                .view
-                .file_path()
-                .is_some_and(|path| Self::dap_source_path_string(&path) == frame.source_path)
-            {
-                self.view.set_debug_stop_line(Some(frame.line));
-            } else {
-                self.view.set_debug_stop_line(None);
             }
             self.update_message(&format!("Selected frame #{next}: {}", frame.name));
         }
@@ -1681,6 +1807,7 @@ impl Editor {
             System(Dismiss) => {
                 self.set_prompt(PromptType::None);
                 self.view.dismiss_search();
+                self.update_message("");
             }
             Edit(InsertNewline) => {
                 self.set_prompt(PromptType::None);
@@ -1690,6 +1817,7 @@ impl Editor {
                 self.command_bar.handle_edit_command(edit_command);
                 let query = self.command_bar.value();
                 self.view.search(&query);
+                self.report_search();
             }
             Move(move_cmd)
                 if matches!(
@@ -1698,11 +1826,13 @@ impl Editor {
                 ) =>
             {
                 self.view.search_next();
+                self.report_search();
             }
             Move(move_cmd)
                 if matches!(move_cmd.direction, MoveDirection::Up | MoveDirection::Left) =>
             {
                 self.view.search_prev();
+                self.report_search();
             }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
@@ -1718,6 +1848,12 @@ impl Editor {
 
     fn process_command_during_save(&mut self, command: Command) {
         match command {
+            Move(move_cmd) if matches!(move_cmd.direction, MoveDirection::Left) => {
+                self.command_bar.move_left();
+            }
+            Move(move_cmd) if matches!(move_cmd.direction, MoveDirection::Right) => {
+                self.command_bar.move_right();
+            }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
@@ -1745,6 +1881,7 @@ impl Editor {
             System(Dismiss) => {
                 self.set_prompt(PromptType::None);
                 self.view.dismiss_search();
+                self.update_message("");
             }
             Edit(InsertNewline) => {
                 self.replace_query = self.command_bar.value();
@@ -1754,6 +1891,7 @@ impl Editor {
                 self.command_bar.handle_edit_command(edit_command);
                 let query = self.command_bar.value();
                 self.view.search(&query);
+                self.report_search();
             }
             Move(move_cmd)
                 if matches!(
@@ -1762,11 +1900,13 @@ impl Editor {
                 ) =>
             {
                 self.view.search_next();
+                self.report_search();
             }
             Move(move_cmd)
                 if matches!(move_cmd.direction, MoveDirection::Up | MoveDirection::Left) =>
             {
                 self.view.search_prev();
+                self.report_search();
             }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
@@ -1785,6 +1925,7 @@ impl Editor {
             System(Dismiss) => {
                 self.set_prompt(PromptType::None);
                 self.view.dismiss_search();
+                self.update_message("");
             }
             Edit(InsertNewline) => {
                 let replacement = self.command_bar.value();
@@ -1799,6 +1940,12 @@ impl Editor {
                 }
             }
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
+            Move(move_cmd) if matches!(move_cmd.direction, MoveDirection::Left) => {
+                self.command_bar.move_left();
+            }
+            Move(move_cmd) if matches!(move_cmd.direction, MoveDirection::Right) => {
+                self.command_bar.move_right();
+            }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
@@ -1819,8 +1966,8 @@ impl Editor {
             }
             Edit(InsertNewline) => {
                 let name = self.command_bar.value();
-                self.set_prompt(PromptType::None);
                 if name.is_empty() {
+                    self.set_prompt(PromptType::None);
                     self.update_message("Name is empty.");
                     return;
                 }
@@ -1828,11 +1975,13 @@ impl Editor {
                 let target = match self.resolve_workspace_target(&base, &name) {
                     Ok(path) => path,
                     Err(msg) => {
+                        self.set_prompt(PromptType::None);
                         self.update_message(&msg);
                         return;
                     }
                 };
                 if is_dir {
+                    self.set_prompt(PromptType::None);
                     match std::fs::create_dir_all(&target) {
                         Ok(()) => {
                             self.update_message(&format!("Created: {name}"));
@@ -1844,9 +1993,15 @@ impl Editor {
                         Err(e) => self.update_message(&format!("Error: {e}")),
                     }
                 } else {
+                    let path_str = target.to_string_lossy().to_string();
+                    if !self.discard_confirmed(&path_str, DiscardKind::Open) {
+                        self.arm_discard(&path_str, DiscardKind::Open);
+                        return;
+                    }
                     if let Some(parent) = target.parent()
                         && let Err(e) = std::fs::create_dir_all(parent)
                     {
+                        self.set_prompt(PromptType::None);
                         self.update_message(&format!("Error: {e}"));
                         return;
                     }
@@ -1856,16 +2011,21 @@ impl Editor {
                         .open(&target)
                     {
                         Ok(_) => {
-                            self.update_message(&format!("Created: {name}"));
+                            self.pending_discard = None;
+                            self.set_prompt(PromptType::None);
                             if let Err(e) = self.sidebar.rebuild() {
                                 self.update_message(&format!("File tree error: {e}"));
                             }
                             self.sidebar.mark_redraw(true);
-                            let path_str = target.to_string_lossy().to_string();
-                            if let Err(e) = self.view.load(&path_str) {
-                                self.update_message(&format!("Open error: {e}"));
-                            } else {
-                                self.status_bar.mark_redraw(true);
+                            match self.view.load(&path_str) {
+                                Ok(()) => {
+                                    self.refresh_status();
+                                    self.update_message(&format!("Created: {name}"));
+                                    self.status_bar.mark_redraw(true);
+                                }
+                                Err(e) => {
+                                    self.update_message(&format!("ERROR: Could not open file: {e}"));
+                                }
                             }
                         }
                         Err(e) => self.update_message(&format!("Error: {e}")),
@@ -1873,6 +2033,12 @@ impl Editor {
                 }
             }
             Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
+            Move(move_cmd) if matches!(move_cmd.direction, MoveDirection::Left) => {
+                self.command_bar.move_left();
+            }
+            Move(move_cmd) if matches!(move_cmd.direction, MoveDirection::Right) => {
+                self.command_bar.move_right();
+            }
             System(
                 Quit | Resize(_) | Search | Save | Replace | ToggleSidebar | FocusSidebar
                 | FocusDebuggerSidebar | FocusView | CreateFile | CreateFolder | ToggleTerminal
@@ -2107,9 +2273,10 @@ impl Editor {
 
     fn sync_view_breakpoints(&mut self) {
         if let Some(path) = self.active_file_path() {
+            let key = Self::breakpoint_key(&path);
             let lines = self
                 .breakpoints
-                .get(&path)
+                .get(&key)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
             self.view.set_breakpoint_lines(lines);
@@ -2177,25 +2344,33 @@ impl Editor {
         }
 
         let new_caret_pos = if self.in_prompt() {
-            Position {
+            Some(Position {
                 row: bottom_bar_row,
                 col: self.command_bar.caret_position_col(),
-            }
+            })
         } else if self.sidebar_visible && self.sidebar_focus {
             if self.sidebar_mode == SidebarMode::Explorer {
-                self.sidebar.caret_position(0)
+                Some(self.sidebar.caret_position(0))
             } else {
-                Position { row: 0, col: 0 }
+                Some(Position { row: 0, col: 0 })
             }
         } else if self.terminal_focus && self.terminal_visible {
-            self.terminal_pane
-                .cursor_position(main_height + debug_rows, sidebar_w)
+            if self.terminal_pane.viewing_history() {
+                None
+            } else {
+                Some(
+                    self.terminal_pane
+                        .cursor_position(main_height + debug_rows, sidebar_w),
+                )
+            }
         } else {
-            self.view.caret_position()
+            Some(self.view.caret_position())
         };
 
-        let _ = Terminal::move_caret_to(new_caret_pos);
-        let _ = Terminal::show_caret();
+        if let Some(new_caret_pos) = new_caret_pos {
+            let _ = Terminal::move_caret_to(new_caret_pos);
+            let _ = Terminal::show_caret();
+        }
         let _ = Terminal::end_synchronized_update();
         let _ = Terminal::execute();
     }
@@ -2205,6 +2380,13 @@ impl Editor {
     // =========================================
     fn update_message(&mut self, new_message: &str) {
         self.message_bar.update_message(new_message);
+    }
+
+    fn report_search(&mut self) {
+        match self.view.search_summary() {
+            Some(label) => self.update_message(&label),
+            None => self.update_message(""),
+        }
     }
 
     fn render_debugger_sidebar(&mut self, total_height: usize) {

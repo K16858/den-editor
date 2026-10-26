@@ -86,141 +86,137 @@ impl GenericHighlighter {
 }
 
 #[allow(clippy::too_many_lines)]
-fn find_string_ranges(
-    string: &str,
+fn scan_strings_and_comments(
+    line: &str,
     state: &mut HighlightState,
-) -> (Vec<std::ops::Range<usize>>, Option<usize>) {
-    let mut ranges = Vec::new();
+    line_comment: &str,
+    block_start: &str,
+    block_end: &str,
+) -> (Vec<std::ops::Range<usize>>, Vec<std::ops::Range<usize>>) {
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    let mut strings = Vec::new();
+    let mut comments = Vec::new();
+    let mut i = 0;
     let mut escape_next = false;
-    let mut start = if state.in_string.is_some() {
-        Some(0)
-    } else {
-        None
+    let mut string_from = if state.in_string.is_some() { Some(0) } else { None };
+    let mut block_from = if state.in_block_comment { Some(0) } else { None };
+
+    let at_byte = |chars: &[(usize, char)], byte: usize| -> usize {
+        chars.iter().position(|(b, _)| *b >= byte).unwrap_or(chars.len())
     };
 
-    let chars: Vec<(usize, char)> = string.char_indices().collect();
-    let mut idx = 0;
+    while i < chars.len() {
+        let (byte_idx, ch) = chars[i];
 
-    while idx < chars.len() {
-        let (byte_idx, ch) = chars[idx];
+        if state.in_block_comment {
+            if !block_end.is_empty() && line[byte_idx..].starts_with(block_end) {
+                let end = byte_idx + block_end.len();
+                comments.push(block_from.unwrap_or(0)..end);
+                state.in_block_comment = false;
+                block_from = None;
+                i = at_byte(&chars, end);
+                continue;
+            }
+            comments.push(block_from.unwrap_or(0)..line.len());
+            break;
+        }
 
-        if escape_next {
-            escape_next = false;
-            idx += 1;
+        if state.in_string.is_some() {
+            if escape_next {
+                escape_next = false;
+                i += 1;
+                continue;
+            }
+            if ch == '\\' {
+                escape_next = true;
+                i += 1;
+                continue;
+            }
+            let kind = state.in_string.unwrap();
+            let triple = matches!(
+                kind,
+                StringType::TripleDoubleQuote | StringType::TripleSingleQuote
+            );
+            let closed = match kind {
+                StringType::DoubleQuote => ch == '"',
+                StringType::SingleQuote => ch == '\'',
+                StringType::Backtick => ch == '`',
+                StringType::TripleDoubleQuote => {
+                    ch == '"'
+                        && i + 2 < chars.len()
+                        && chars[i + 1].1 == '"'
+                        && chars[i + 2].1 == '"'
+                }
+                StringType::TripleSingleQuote => {
+                    ch == '\''
+                        && i + 2 < chars.len()
+                        && chars[i + 1].1 == '\''
+                        && chars[i + 2].1 == '\''
+                }
+            };
+            if closed {
+                let end = if triple { byte_idx + 3 } else { byte_idx + ch.len_utf8() };
+                strings.push(string_from.unwrap_or(0)..end);
+                state.in_string = None;
+                string_from = None;
+                i += if triple { 3 } else { 1 };
+                continue;
+            }
+            i += 1;
             continue;
         }
 
-        if ch == '\\' && state.in_string.is_some() {
-            escape_next = true;
-            idx += 1;
+        if !line_comment.is_empty() && line[byte_idx..].starts_with(line_comment) {
+            comments.push(byte_idx..line.len());
+            break;
+        }
+        if !block_start.is_empty()
+            && !block_end.is_empty()
+            && line[byte_idx..].starts_with(block_start)
+        {
+            state.in_block_comment = true;
+            block_from = Some(byte_idx);
+            i = at_byte(&chars, byte_idx + block_start.len());
             continue;
         }
-
-        match state.in_string {
-            Some(StringType::DoubleQuote) => {
-                if ch == '"' {
-                    let start_pos = start.unwrap_or(0);
-                    ranges.push(start_pos..byte_idx + 1);
-                    state.in_string = None;
-                    start = None;
-                }
-                idx += 1;
-            }
-            Some(StringType::SingleQuote) => {
-                if ch == '\'' {
-                    let start_pos = start.unwrap_or(0);
-                    ranges.push(start_pos..byte_idx + 1);
-                    state.in_string = None;
-                    start = None;
-                }
-                idx += 1;
-            }
-            Some(StringType::TripleDoubleQuote) => {
-                // Check for """ to end triple quote
-                if ch == '"' && idx + 2 < chars.len() {
-                    let (_, ch2) = chars[idx + 1];
-                    let (_, ch3) = chars[idx + 2];
-                    if ch2 == '"' && ch3 == '"' {
-                        let start_pos = start.unwrap_or(0);
-                        ranges.push(start_pos..byte_idx + 3);
-                        state.in_string = None;
-                        start = None;
-                        idx += 3;
-                        continue;
-                    }
-                }
-                idx += 1;
-            }
-            Some(StringType::TripleSingleQuote) => {
-                // Check for ''' to end triple quote
-                if ch == '\'' && idx + 2 < chars.len() {
-                    let (_, ch2) = chars[idx + 1];
-                    let (_, ch3) = chars[idx + 2];
-                    if ch2 == '\'' && ch3 == '\'' {
-                        let start_pos = start.unwrap_or(0);
-                        ranges.push(start_pos..byte_idx + 3);
-                        state.in_string = None;
-                        start = None;
-                        idx += 3;
-                        continue;
-                    }
-                }
-                idx += 1;
-            }
-            Some(StringType::Backtick) => {
-                if ch == '`' {
-                    let start_pos = start.unwrap_or(0);
-                    ranges.push(start_pos..byte_idx + 1);
-                    state.in_string = None;
-                    start = None;
-                }
-                idx += 1;
-            }
-            None => {
-                // Check for triple quotes first
-                if ch == '"' && idx + 2 < chars.len() {
-                    let (_, ch2) = chars[idx + 1];
-                    let (_, ch3) = chars[idx + 2];
-                    if ch2 == '"' && ch3 == '"' {
-                        start = Some(byte_idx);
-                        state.in_string = Some(StringType::TripleDoubleQuote);
-                        idx += 3;
-                        continue;
-                    }
-                }
-                if ch == '\'' && idx + 2 < chars.len() {
-                    let (_, ch2) = chars[idx + 1];
-                    let (_, ch3) = chars[idx + 2];
-                    if ch2 == '\'' && ch3 == '\'' {
-                        start = Some(byte_idx);
-                        state.in_string = Some(StringType::TripleSingleQuote);
-                        idx += 3;
-                        continue;
-                    }
-                }
-                // Regular quotes
-                if ch == '"' {
-                    start = Some(byte_idx);
-                    state.in_string = Some(StringType::DoubleQuote);
-                } else if ch == '\'' {
-                    start = Some(byte_idx);
-                    state.in_string = Some(StringType::SingleQuote);
-                } else if ch == '`' {
-                    start = Some(byte_idx);
-                    state.in_string = Some(StringType::Backtick);
-                }
-                idx += 1;
-            }
+        if ch == '"' && i + 2 < chars.len() && chars[i + 1].1 == '"' && chars[i + 2].1 == '"' {
+            state.in_string = Some(StringType::TripleDoubleQuote);
+            string_from = Some(byte_idx);
+            i += 3;
+            continue;
         }
+        if ch == '\'' && i + 2 < chars.len() && chars[i + 1].1 == '\'' && chars[i + 2].1 == '\'' {
+            state.in_string = Some(StringType::TripleSingleQuote);
+            string_from = Some(byte_idx);
+            i += 3;
+            continue;
+        }
+        if ch == '"' {
+            state.in_string = Some(StringType::DoubleQuote);
+            string_from = Some(byte_idx);
+        } else if ch == '\'' {
+            state.in_string = Some(StringType::SingleQuote);
+            string_from = Some(byte_idx);
+        } else if ch == '`' {
+            state.in_string = Some(StringType::Backtick);
+            string_from = Some(byte_idx);
+        }
+        i += 1;
     }
 
-    let continuation_start = if state.in_string.is_some() {
-        start.or(Some(0))
-    } else {
-        None
-    };
-
-    (ranges, continuation_start)
+    if state.in_string.is_some() {
+        strings.push(string_from.unwrap_or(0)..line.len());
+    }
+    if state.in_block_comment {
+        let start = block_from.unwrap_or(0);
+        if !comments
+            .iter()
+            .any(|range| range.start == start && range.end == line.len())
+        {
+            comments.push(start..line.len());
+        }
+    }
+    (strings, comments)
 }
 
 fn is_word_boundary(ch: char) -> bool {
@@ -332,7 +328,13 @@ impl Highlighter for GenericHighlighter {
             }
         }
 
-        let (string_ranges, continuation_start) = find_string_ranges(line, &mut state);
+        let (string_ranges, comment_ranges) = scan_strings_and_comments(
+            line,
+            &mut state,
+            &self.config.line_comment_start,
+            &self.config.block_comment_start,
+            &self.config.block_comment_end,
+        );
         for range in &string_ranges {
             annotations.push(HighlightAnnotation {
                 start: range.start,
@@ -340,67 +342,7 @@ impl Highlighter for GenericHighlighter {
                 annotation_type: AnnotationType::String,
             });
         }
-
-        // If string continues to next line, highlight from start to end of line
-        if let Some(start_pos) = continuation_start {
-            annotations.push(HighlightAnnotation {
-                start: start_pos,
-                end: line.len(),
-                annotation_type: AnnotationType::String,
-            });
-        }
-
-        let continuation_range = continuation_start.map(|start| start..line.len());
-        let is_in_string = |pos: usize| -> bool {
-            string_ranges.iter().any(|range| range.contains(&pos))
-                || continuation_range
-                    .as_ref()
-                    .is_some_and(|range| range.contains(&pos))
-        };
-
-        // Block comments
-        let mut block_comment_ranges = Vec::new();
-        if !self.config.block_comment_start.is_empty() && !self.config.block_comment_end.is_empty()
-        {
-            let mut pos = 0;
-            let mut comment_start_pos = if state.in_block_comment {
-                Some(0)
-            } else {
-                None
-            };
-
-            while pos < line.len() {
-                if state.in_block_comment {
-                    if let Some(end_pos) = line[pos..].find(self.config.block_comment_end.as_str())
-                    {
-                        let abs_end = pos + end_pos + self.config.block_comment_end.len();
-                        let start = comment_start_pos.unwrap_or(0);
-                        block_comment_ranges.push(start..abs_end);
-                        state.in_block_comment = false;
-                        comment_start_pos = None;
-                        pos = abs_end;
-                    } else {
-                        block_comment_ranges.push(comment_start_pos.unwrap_or(0)..line.len());
-                        break;
-                    }
-                } else if let Some(start_pos) =
-                    line[pos..].find(self.config.block_comment_start.as_str())
-                {
-                    let abs_start = pos + start_pos;
-                    if is_in_string(abs_start) {
-                        pos = abs_start + 1;
-                    } else {
-                        state.in_block_comment = true;
-                        comment_start_pos = Some(abs_start);
-                        pos = abs_start + self.config.block_comment_start.len();
-                    }
-                } else {
-                    break;
-                }
-            }
-        }
-
-        for range in &block_comment_ranges {
+        for range in &comment_ranges {
             annotations.push(HighlightAnnotation {
                 start: range.start,
                 end: range.end,
@@ -408,32 +350,11 @@ impl Highlighter for GenericHighlighter {
             });
         }
 
-        let is_in_block_comment = |pos: usize| -> bool {
-            block_comment_ranges
-                .iter()
-                .any(|range| range.contains(&pos))
+        let is_in_string = |pos: usize| -> bool {
+            string_ranges.iter().any(|range| range.contains(&pos))
         };
-
-        // Line comments
-        if let Some(comment_start) = line.find(self.config.line_comment_start.as_str())
-            && !is_in_string(comment_start)
-            && !is_in_block_comment(comment_start)
-        {
-            annotations.push(HighlightAnnotation {
-                start: comment_start,
-                end: line.len(),
-                annotation_type: AnnotationType::Comment,
-            });
-        }
-
         let is_in_comment = |pos: usize| -> bool {
-            is_in_block_comment(pos) || {
-                if let Some(comment_start) = line.find(self.config.line_comment_start.as_str()) {
-                    !is_in_string(comment_start) && pos >= comment_start
-                } else {
-                    false
-                }
-            }
+            comment_ranges.iter().any(|range| range.contains(&pos))
         };
 
         // Keywords and primitive types — single Aho-Corasick pass
@@ -659,3 +580,67 @@ impl Highlighter for GenericHighlighter {
         (annotations, state)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn highlighter() -> GenericHighlighter {
+        GenericHighlighter::from_config(
+            "test",
+            LanguageConfig {
+                keywords: vec!["let".to_string()],
+                primitive_types: vec![],
+                line_comment_start: "//".to_string(),
+                block_comment_start: "/*".to_string(),
+                block_comment_end: "*/".to_string(),
+                line_prefix_keyword_markers: vec![],
+                line_prefix_comment_markers: vec![],
+                full_line_comment_prefixes: vec![],
+                highlight_capitalized_type_names: false,
+            },
+        )
+    }
+
+    fn covers(annotations: &[HighlightAnnotation], kind: AnnotationType, pos: usize) -> bool {
+        annotations
+            .iter()
+            .any(|ann| ann.annotation_type == kind && (ann.start..ann.end).contains(&pos))
+    }
+
+    #[test]
+    fn line_comment_after_url_in_string_is_a_comment() {
+        let line = "let s = \"http://example.com\"; // real";
+        let (annotations, state) = highlighter().highlight_line(line, 0, HighlightState::default());
+        let inside_url = line.find("http://").unwrap() + 5;
+        let comment = line.find("// real").unwrap();
+        assert!(covers(&annotations, AnnotationType::String, inside_url));
+        assert!(!covers(
+            &annotations,
+            AnnotationType::Comment,
+            inside_url
+        ));
+        assert!(covers(&annotations, AnnotationType::Comment, comment));
+        assert!(state.in_string.is_none());
+    }
+
+    #[test]
+    fn quote_inside_line_comment_does_not_open_a_string() {
+        let hl = highlighter();
+        let (_, state) = hl.highlight_line("// \"hello", 0, HighlightState::default());
+        assert!(state.in_string.is_none());
+        let (annotations, state) = hl.highlight_line("let x = 1;", 1, state);
+        assert!(state.in_string.is_none());
+        assert!(!covers(&annotations, AnnotationType::String, 0));
+    }
+
+    #[test]
+    fn block_comment_inside_line_comment_does_not_continue() {
+        let hl = highlighter();
+        let (_, state) = hl.highlight_line("// /*", 0, HighlightState::default());
+        assert!(!state.in_block_comment);
+        let (annotations, _) = hl.highlight_line("let x = 1;", 1, state);
+        assert!(!covers(&annotations, AnnotationType::Comment, 0));
+    }
+}
+

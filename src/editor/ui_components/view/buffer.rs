@@ -1,14 +1,33 @@
 use super::{FileInfo, Line, Location};
 use std::fs::{File, read_to_string};
+use std::hash::{Hash, Hasher};
 use std::io::Error;
 use std::io::Write;
+use std::ops::Deref;
 use unicode_segmentation::UnicodeSegmentation;
 
-#[derive(Default)]
 pub struct Buffer {
     pub lines: Vec<Line>,
     pub file_info: FileInfo,
     pub modified: bool,
+    saved_hash: u64,
+    newline: String,
+    trailing_newline: bool,
+}
+
+impl Default for Buffer {
+    fn default() -> Self {
+        let mut buffer = Self {
+            lines: Vec::new(),
+            file_info: FileInfo::default(),
+            modified: false,
+            saved_hash: 0,
+            newline: "\n".to_string(),
+            trailing_newline: true,
+        };
+        buffer.mark_saved();
+        buffer
+    }
 }
 
 impl Buffer {
@@ -18,19 +37,58 @@ impl Buffer {
         for value in contents.lines() {
             lines.push(Line::from(value));
         }
-        Ok(Self {
+        let newline = if contents.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        let trailing_newline = contents.is_empty() || contents.ends_with('\n');
+        let mut buffer = Self {
             lines,
             file_info: FileInfo::from(file_name),
             modified: false,
-        })
+            saved_hash: 0,
+            newline: newline.to_string(),
+            trailing_newline,
+        };
+        buffer.mark_saved();
+        Ok(buffer)
+    }
+
+    pub fn mark_saved(&mut self) {
+        self.saved_hash = self.content_hash();
+        self.modified = false;
+    }
+
+    pub fn sync_modified_to_saved(&mut self) {
+        self.modified = self.content_hash() != self.saved_hash;
+    }
+
+    fn content_hash(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for line in &self.lines {
+            line.deref().hash(&mut hasher);
+            b'\n'.hash(&mut hasher);
+        }
+        hasher.finish()
     }
 
     fn save_to_file(&self, file_info: &FileInfo) -> Result<(), Error> {
-        if let Some(file_path) = &file_info.get_path() {
-            let mut file = File::create(file_path)?;
-            for line in &self.lines {
-                writeln!(file, "{line}")?;
+        let Some(file_path) = file_info.get_path() else {
+            return Ok(());
+        };
+        let mut file = File::create(file_path)?;
+        if self.lines.is_empty() {
+            return Ok(());
+        }
+        for (i, line) in self.lines.iter().enumerate() {
+            if i > 0 {
+                write!(file, "{}", self.newline)?;
             }
+            write!(file, "{line}")?;
+        }
+        if self.trailing_newline {
+            write!(file, "{}", self.newline)?;
         }
         Ok(())
     }
@@ -39,7 +97,7 @@ impl Buffer {
         let file_info = FileInfo::from(file_name);
         self.save_to_file(&file_info)?;
         self.file_info = file_info;
-        self.modified = false;
+        self.mark_saved();
         Ok(())
     }
 
@@ -48,7 +106,7 @@ impl Buffer {
             return Err(Error::other("No file path set"));
         }
         self.save_to_file(&self.file_info)?;
-        self.modified = false;
+        self.mark_saved();
         Ok(())
     }
 
@@ -62,19 +120,6 @@ impl Buffer {
 
     pub fn height(&self) -> usize {
         self.lines.len()
-    }
-
-    pub fn insert_char(&mut self, character: char, at: Location) {
-        if at.line_idx > self.height() {
-            return;
-        }
-        if at.line_idx == self.height() {
-            self.lines.push(Line::from(&character.to_string()));
-            self.modified = true;
-        } else if let Some(line) = self.lines.get_mut(at.line_idx) {
-            line.insert_char(character, at.grapheme_idx);
-            self.modified = true;
-        }
     }
 
     pub fn delete(&mut self, at: Location) {
@@ -111,13 +156,17 @@ impl Buffer {
                 at.line_idx += 1;
                 at.grapheme_idx = 0;
             }
-            let base = at.grapheme_idx;
-            for ch in line_text.chars() {
-                self.insert_char(ch, at);
-                at.grapheme_idx += 1;
+            if line_text.is_empty() {
+                continue;
             }
-            // Correct grapheme_idx for multi-codepoint grapheme clusters.
-            at.grapheme_idx = base + line_text.graphemes(true).count();
+            if at.line_idx == self.height() {
+                self.lines.push(Line::default());
+            }
+            if let Some(line) = self.lines.get_mut(at.line_idx) {
+                line.insert_str(at.grapheme_idx, line_text);
+                self.modified = true;
+            }
+            at.grapheme_idx += line_text.graphemes(true).count();
         }
         at
     }
@@ -302,5 +351,51 @@ impl Buffer {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_string_keeps_multicodepoint_grapheme_together() {
+        let mut buffer = Buffer::default();
+        buffer.lines.push(Line::from("XY"));
+        let end = buffer.insert_string(
+            Location {
+                line_idx: 0,
+                grapheme_idx: 1,
+            },
+            "e\u{0301}Z",
+        );
+        assert_eq!(&*buffer.lines[0], "Xe\u{0301}ZY");
+        assert_eq!(
+            end,
+            Location {
+                line_idx: 0,
+                grapheme_idx: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn save_keeps_newline_style_and_trailing_newline() {
+        let dir = std::env::temp_dir().join(format!("den-nl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lf = dir.join("lf.txt");
+        let crlf = dir.join("crlf.txt");
+        std::fs::write(&lf, "a\nb").unwrap();
+        std::fs::write(&crlf, "a\r\nb\r\n").unwrap();
+
+        let mut loaded = Buffer::load(lf.to_str().unwrap()).unwrap();
+        loaded.save().unwrap();
+        assert_eq!(std::fs::read(&lf).unwrap(), b"a\nb");
+
+        let mut loaded = Buffer::load(crlf.to_str().unwrap()).unwrap();
+        loaded.save().unwrap();
+        assert_eq!(std::fs::read(&crlf).unwrap(), b"a\r\nb\r\n");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
