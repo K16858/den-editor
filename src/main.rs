@@ -4,7 +4,7 @@ use editor::Editor;
 
 fn main() {
     match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
-        [flag] if matches!(flag.as_str(), "--version" | "-V") => {
+        [flag] if matches!(flag.as_str(), "--version" | "-V" | "-v") => {
             println!("{}", env!("CARGO_PKG_VERSION"));
         }
         [] => run_editor(None),
