@@ -4,7 +4,7 @@ use crossterm::event::{
     KeyEvent, KeyModifiers,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum System {
     Save,
     Resize(Size),
@@ -70,6 +70,7 @@ impl TryFrom<KeyEvent> for System {
                 Char('d' | 'D') => Ok(Self::FocusDebuggerSidebar),
                 Char('n' | 'N') => Ok(Self::CreateFolder),
                 Char('x' | 'X') => Ok(Self::DisconnectDebug),
+                Null | Char('2' | '@') => Ok(Self::ToggleTerminal),
                 _ => Err(format!("Unsupported CONTROL+SHIFT+{code:?} combination")),
             }
         } else if modifiers == KeyModifiers::CONTROL | KeyModifiers::ALT {
@@ -97,7 +98,7 @@ impl TryFrom<KeyEvent> for System {
                 Char('2') => Ok(Self::FocusTerminal),
                 Char('n') => Ok(Self::CreateFile),
                 Char('r') => Ok(Self::Continue),
-                Null | Char('@') => Ok(Self::ToggleTerminal),
+                Null | Char('@' | '`') => Ok(Self::ToggleTerminal),
                 _ => Err(format!("Unsupported CONTROL+{code:?} combination")),
             }
         } else {
@@ -105,5 +106,39 @@ impl TryFrom<KeyEvent> for System {
                 "Unsupported key code {code:?} or modifier {modifiers:?}"
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::System;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn toggle_terminal_accepts_windows_and_unix_key_variants() {
+        for (code, modifiers) in [
+            (KeyCode::Char('@'), KeyModifiers::CONTROL),
+            (KeyCode::Char('`'), KeyModifiers::CONTROL),
+            (KeyCode::Null, KeyModifiers::CONTROL),
+            (
+                KeyCode::Char('2'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+            (
+                KeyCode::Char('@'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+            (KeyCode::Null, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+        ] {
+            assert_eq!(
+                System::try_from(KeyEvent::new(code, modifiers)),
+                Ok(System::ToggleTerminal)
+            );
+        }
+
+        assert_eq!(
+            System::try_from(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::CONTROL)),
+            Ok(System::FocusTerminal)
+        );
     }
 }

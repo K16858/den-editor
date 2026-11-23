@@ -67,7 +67,7 @@ impl UIComponent for StatusBar {
             &self.current_status.position_indicator_to_string(),
             self.size.width,
         );
-        Terminal::print_inverted_row(origin_row, &to_print)?;
+        Terminal::print_inverted_row(origin_row, self.size.width, &to_print)?;
 
         Ok(())
     }

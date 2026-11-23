@@ -49,6 +49,9 @@ pub struct AdapterConfig {
     pub stacktrace_continue_error_patterns: Vec<String>,
     #[serde(default)]
     pub stacktrace_retry_error_patterns: Vec<String>,
+    /// `None` means "not set in this file"; see `client_addr_arg` doc comment.
+    #[serde(default)]
+    pub attach_adapter_stdio: Option<bool>,
     #[serde(default)]
     pub launch_template: Value,
     #[serde(default)]
@@ -75,6 +78,10 @@ impl AdapterConfig {
 
     pub fn sync_breakpoints_before_auto_continue(&self) -> bool {
         self.sync_breakpoints_before_auto_continue.unwrap_or(false)
+    }
+
+    pub fn attach_adapter_stdio(&self) -> bool {
+        self.attach_adapter_stdio.unwrap_or(false)
     }
 
     pub fn health_check_args(&self) -> Vec<String> {
@@ -217,6 +224,9 @@ fn merge_missing_fields_from_default(current: &mut AdapterConfig, default_cfg: &
         current.stacktrace_retry_error_patterns =
             default_cfg.stacktrace_retry_error_patterns.clone();
     }
+    if current.attach_adapter_stdio.is_none() {
+        current.attach_adapter_stdio = default_cfg.attach_adapter_stdio;
+    }
     if current.launch_template.is_null() {
         current.launch_template = default_cfg.launch_template.clone();
     }
@@ -257,11 +267,28 @@ mod tests {
         assert_eq!(mips.dap_transport, "tcp-server-dials-client");
         assert_eq!(mips.client_addr_arg(), "--connect");
         assert_eq!(mips.health_check_args(), ["--help"]);
+        assert!(mips.attach_adapter_stdio());
 
         let go = configs.iter().find(|cfg| cfg.id == "go-delve").unwrap();
         assert_eq!(go.dap_transport, "tcp-server-dials-client");
         assert_eq!(go.session_cwd_template, "${moduleRoot}");
         assert!(go.sync_breakpoints_before_auto_continue());
+        assert!(go.attach_adapter_stdio());
+        assert_eq!(go.launch_template["console"], "integrated");
+
+        let py = configs
+            .iter()
+            .find(|cfg| cfg.id == "python-debugpy")
+            .unwrap();
+        assert!(!py.attach_adapter_stdio());
+        assert_eq!(py.launch_template["console"], "integratedTerminal");
+
+        let rust = configs
+            .iter()
+            .find(|cfg| cfg.id == "rust-codelldb")
+            .unwrap();
+        assert!(!rust.attach_adapter_stdio());
+        assert_eq!(rust.launch_template["terminal"], "integrated");
     }
 
     #[test]
@@ -286,6 +313,7 @@ mod tests {
         assert_eq!(current.dap_transport, "tcp-server-dials-client");
         assert_eq!(current.session_cwd_template, "${moduleRoot}");
         assert_eq!(current.auto_continue_stop_reasons, ["entry"]);
+        assert!(current.attach_adapter_stdio());
         assert_eq!(current.launch_template["program"], ".");
         assert_eq!(current.launch_overrides["output"], "keep");
         assert_eq!(current.health_check_args(), ["version"]);

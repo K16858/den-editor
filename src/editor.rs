@@ -19,6 +19,7 @@ use std::{
     panic::{set_hook, take_hook},
     path::{Component, Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
+    time::Duration,
 };
 use terminal::Terminal;
 mod command;
@@ -76,6 +77,13 @@ enum SidebarMode {
     Debugger,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq, Default)]
+enum TerminalMode {
+    #[default]
+    Shell,
+    Debug,
+}
+
 impl PromptType {
     fn is_none(&self) -> bool {
         *self == Self::None
@@ -99,6 +107,8 @@ pub struct Editor {
     sidebar_focus: bool,
     sidebar_mode: SidebarMode,
     terminal_pane: TerminalPane,
+    debug_terminal: TerminalPane,
+    terminal_mode: TerminalMode,
     terminal_visible: bool,
     terminal_focus: bool,
     debug_panel: DebugPanel,
@@ -117,6 +127,9 @@ pub struct Editor {
     current_variables_reference: Option<i64>,
     variables_reference_stack: Vec<i64>,
     pending_discard: Option<PendingDiscard>,
+    caret_dirty: bool,
+    caret_visible: bool,
+    restore_terminal: bool,
 }
 
 impl Editor {
@@ -169,6 +182,8 @@ impl Editor {
             sidebar_focus,
             sidebar_mode: SidebarMode::Explorer,
             terminal_pane: TerminalPane::new(),
+            debug_terminal: TerminalPane::new_with_title("Debug I/O"),
+            terminal_mode: TerminalMode::Shell,
             terminal_visible: false,
             terminal_focus: false,
             debug_panel: DebugPanel::new(),
@@ -187,6 +202,9 @@ impl Editor {
             current_variables_reference: None,
             variables_reference_stack: Vec::new(),
             pending_discard: None,
+            caret_dirty: true,
+            caret_visible: true,
+            restore_terminal: true,
         };
 
         let size = Terminal::size().unwrap_or_default();
@@ -211,6 +229,7 @@ impl Editor {
     pub fn run(&mut self) {
         loop {
             let _ = self.terminal_pane.poll();
+            let _ = self.debug_terminal.poll();
             self.poll_debug_events();
             if self.needs_refresh() {
                 self.refresh_screen();
@@ -218,19 +237,36 @@ impl Editor {
             if self.should_quit {
                 break;
             }
-            match poll(std::time::Duration::from_millis(50)) {
-                Ok(true) => match read() {
-                    Ok(event) => self.evaluate_event(event),
-                    Err(err) => {
-                        self.update_message(&format!("Input error: {err}"));
+            match poll(Duration::from_millis(50)) {
+                Ok(true) => {
+                    match read() {
+                        Ok(event) => self.evaluate_event(event),
+                        Err(err) => {
+                            self.update_message(&format!("Input error: {err}"));
+                        }
                     }
-                },
+                    let mut drained = 0usize;
+                    while !self.should_quit
+                        && drained < 64
+                        && poll(Duration::ZERO).unwrap_or(false)
+                    {
+                        match read() {
+                            Ok(event) => self.evaluate_event(event),
+                            Err(err) => {
+                                self.update_message(&format!("Input error: {err}"));
+                                break;
+                            }
+                        }
+                        drained += 1;
+                    }
+                }
                 Ok(false) => {}
                 Err(err) => {
                     self.update_message(&format!("Poll error: {err}"));
                 }
             }
             let _ = self.terminal_pane.poll();
+            let _ = self.debug_terminal.poll();
             self.poll_debug_events();
             let mut status = self.view.get_status();
             status.debug_state_label = if self.debug_state.active {
@@ -256,7 +292,7 @@ impl Editor {
         if let Event::Paste(ref data) = event {
             if self.prompt_type.is_none() {
                 if self.terminal_visible && self.terminal_focus {
-                    let _ = self.terminal_pane.write(data.as_bytes());
+                    let _ = self.active_terminal_mut().write(data.as_bytes());
                 } else if !(self.sidebar_visible && self.sidebar_focus) {
                     self.view.paste_text(data);
                 }
@@ -279,14 +315,6 @@ impl Editor {
                 && kind == &KeyEventKind::Press
             {
                 use crossterm::event::KeyCode;
-                if let (KeyCode::Null | KeyCode::Char('@' | '2'), KeyModifiers::CONTROL) =
-                    (code, *modifiers)
-                {
-                    if let Ok(cmd) = Command::try_from(event) {
-                        self.process_command(cmd);
-                    }
-                    return;
-                }
                 if let Ok(cmd) = Command::try_from(event.clone())
                     && let System(
                         Quit | FocusView | FocusTerminal | ToggleTerminal | FocusSidebar
@@ -298,27 +326,29 @@ impl Editor {
                 }
                 if *modifiers == KeyModifiers::CONTROL {
                     if let KeyCode::Char('c') = code {
-                        let _ = self.terminal_pane.write(&[0x03]);
+                        let _ = self.active_terminal_mut().write(&[0x03]);
                         return;
                     }
                     if let KeyCode::Char('d') = code {
-                        let _ = self.terminal_pane.write(&[0x04]);
+                        let _ = self.active_terminal_mut().write(&[0x04]);
                         return;
                     }
                 }
                 if *modifiers == KeyModifiers::NONE {
                     if *code == KeyCode::PageUp {
-                        self.terminal_pane.scroll_page_up();
+                        self.active_terminal_mut().scroll_page_up();
+                        self.caret_dirty = true;
                         return;
                     }
                     if *code == KeyCode::PageDown {
-                        self.terminal_pane.scroll_page_down();
+                        self.active_terminal_mut().scroll_page_down();
+                        self.caret_dirty = true;
                         return;
                     }
                 }
                 let bytes = key_event_to_bytes(*code, *modifiers);
                 if !bytes.is_empty() {
-                    let _ = self.terminal_pane.write(&bytes);
+                    let _ = self.active_terminal_mut().write(&bytes);
                 }
                 return;
             }
@@ -401,6 +431,7 @@ impl Editor {
                     self.sidebar_focus = false;
                     self.sidebar.mark_redraw(true);
                     self.view.mark_redraw(true);
+                    self.caret_dirty = true;
                     true
                 }
                 System(ToggleSidebar) => {
@@ -489,6 +520,7 @@ impl Editor {
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
         self.debug_panel.mark_redraw(true);
+        self.caret_dirty = true;
     }
 
     fn focus_sidebar(&mut self) {
@@ -504,6 +536,7 @@ impl Editor {
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
         self.debug_panel.mark_redraw(true);
+        self.caret_dirty = true;
     }
 
     fn focus_debugger_sidebar(&mut self) {
@@ -518,6 +551,7 @@ impl Editor {
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
         self.debug_panel.mark_redraw(true);
+        self.caret_dirty = true;
     }
 
     fn focus_view(&mut self) {
@@ -526,6 +560,40 @@ impl Editor {
         self.sidebar.mark_redraw(true);
         self.view.mark_redraw(true);
         self.debug_panel.mark_redraw(true);
+        self.caret_dirty = true;
+    }
+
+    fn active_terminal(&self) -> &TerminalPane {
+        match self.terminal_mode {
+            TerminalMode::Shell => &self.terminal_pane,
+            TerminalMode::Debug => &self.debug_terminal,
+        }
+    }
+
+    fn active_terminal_mut(&mut self) -> &mut TerminalPane {
+        match self.terminal_mode {
+            TerminalMode::Shell => &mut self.terminal_pane,
+            TerminalMode::Debug => &mut self.debug_terminal,
+        }
+    }
+
+    fn mark_debugger_sidebar_dirty(&mut self) {
+        if self.sidebar_visible && self.sidebar_mode == SidebarMode::Debugger {
+            self.sidebar.mark_redraw(true);
+        }
+    }
+
+    fn show_debug_terminal(&mut self) {
+        self.terminal_mode = TerminalMode::Debug;
+        if !self.terminal_visible {
+            self.terminal_visible = true;
+            let size = self.terminal_size;
+            self.resize(size);
+        }
+        self.view.mark_redraw(true);
+        self.debug_terminal.mark_redraw(true);
+        self.debug_panel.mark_redraw(true);
+        self.caret_dirty = true;
     }
 
     fn toggle_terminal(&mut self) {
@@ -533,29 +601,43 @@ impl Editor {
         if self.terminal_visible {
             self.terminal_focus = true;
             self.sidebar_focus = false;
-            self.start_terminal_if_needed();
+            if self.terminal_mode == TerminalMode::Shell {
+                self.start_terminal_if_needed();
+            }
         } else {
             self.terminal_focus = false;
+            if !self.debug_state.active {
+                self.terminal_mode = TerminalMode::Shell;
+            }
         }
         let size = self.terminal_size;
         self.resize(size);
         self.view.mark_redraw(true);
-        self.terminal_pane.mark_redraw(true);
+        self.active_terminal_mut().mark_redraw(true);
         self.debug_panel.mark_redraw(true);
+        self.caret_dirty = true;
     }
 
     fn focus_terminal(&mut self) {
         if !self.terminal_visible {
+            self.terminal_mode = if self.debug_state.active {
+                TerminalMode::Debug
+            } else {
+                TerminalMode::Shell
+            };
             self.terminal_visible = true;
-            self.start_terminal_if_needed();
+            if self.terminal_mode == TerminalMode::Shell {
+                self.start_terminal_if_needed();
+            }
             let size = self.terminal_size;
             self.resize(size);
         }
         self.terminal_focus = true;
         self.sidebar_focus = false;
-        self.terminal_pane.mark_redraw(true);
+        self.active_terminal_mut().mark_redraw(true);
         self.view.mark_redraw(true);
         self.debug_panel.mark_redraw(true);
+        self.caret_dirty = true;
     }
 
     fn start_terminal_if_needed(&mut self) {
@@ -569,7 +651,7 @@ impl Editor {
             0
         };
         #[allow(clippy::cast_possible_truncation)]
-        let cols = self.terminal_size.width.saturating_sub(sidebar_w) as u16;
+        let cols = self.terminal_size.width.saturating_sub(sidebar_w).max(1) as u16;
         if let Err(e) = self.terminal_pane.start(&cwd, cols) {
             self.update_message(&format!("Terminal error: {e}"));
         }
@@ -583,6 +665,7 @@ impl Editor {
             }
             self.view.mark_redraw(true);
             self.sidebar.mark_redraw(true);
+            self.caret_dirty = true;
         }
     }
 
@@ -690,7 +773,8 @@ impl Editor {
             })
         };
 
-        match DapSession::start(&adapter, debug_cwd.as_deref()) {
+        let session_result = self.start_debug_session(&adapter, debug_cwd.as_deref());
+        match session_result {
             Ok(mut session) => {
                 if let Err(e) = session.send_request(
                     "initialize",
@@ -700,10 +784,12 @@ impl Editor {
                         "adapterID": adapter.dap_adapter_type,
                         "linesStartAt1": true,
                         "columnsStartAt1": true,
-                        "pathFormat": "path"
+                        "pathFormat": "path",
+                        "supportsRunInTerminalRequest": true
                     }),
                 ) {
                     session.stop();
+                    self.debug_terminal.stop();
                     self.update_message(&format!("Debug init error: {e}"));
                     return;
                 }
@@ -711,6 +797,7 @@ impl Editor {
                     Ok(args) => args,
                     Err(msg) => {
                         session.stop();
+                        self.debug_terminal.stop();
                         self.update_message(&msg);
                         return;
                     }
@@ -721,11 +808,56 @@ impl Editor {
                 self.debug_paused = false;
                 self.pending_launch_arguments = Some(launch_args);
                 self.debug_panel.update(&self.debug_state);
+                self.mark_debugger_sidebar_dirty();
                 self.update_message(&format!("Debug initializing: {}", adapter.display_name));
             }
             Err(e) => {
                 self.update_message(&format!("Debug start error: {e}"));
             }
+        }
+    }
+
+    fn start_debug_session(
+        &mut self,
+        adapter: &AdapterConfig,
+        debug_cwd: Option<&Path>,
+    ) -> std::io::Result<DapSession> {
+        let sidebar_w = if self.sidebar_visible {
+            FileTree::WIDTH
+        } else {
+            0
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let cols = self.terminal_size.width.saturating_sub(sidebar_w).max(1) as u16;
+        self.debug_terminal.clear_for_output(cols as usize);
+
+        if adapter
+            .dap_transport
+            .eq_ignore_ascii_case("tcp-server-dials-client")
+            && adapter.attach_adapter_stdio()
+        {
+            let (listener, addr) = DapSession::bind_tcp_listener()?;
+            let mut full_args = adapter.args.clone();
+            full_args.push(adapter.client_addr_arg().to_string());
+            full_args.push(addr.to_string());
+            self.show_debug_terminal();
+            if let Err(e) =
+                self.debug_terminal
+                    .start_command(&adapter.command, &full_args, debug_cwd, &[], cols)
+            {
+                self.debug_terminal.stop();
+                return Err(e);
+            }
+            let session =
+                DapSession::accept_tcp_with_poll(&listener, Duration::from_secs(5), || {
+                    let _ = self.debug_terminal.poll();
+                });
+            if session.is_err() {
+                self.debug_terminal.stop();
+            }
+            session
+        } else {
+            DapSession::start(adapter, debug_cwd)
         }
     }
 
@@ -735,6 +867,7 @@ impl Editor {
         }
         self.debug_session = None;
         self.active_debug_adapter = None;
+        self.debug_terminal.stop();
     }
 
     fn reset_debug_editor_state_after_stop(&mut self) {
@@ -758,6 +891,7 @@ impl Editor {
         self.pending_continue_after_entry = false;
         self.pending_launch_arguments = None;
         self.debug_panel.update(&self.debug_state);
+        self.mark_debugger_sidebar_dirty();
     }
 
     fn finish_debug_session(&mut self, message: Option<&str>) {
@@ -820,6 +954,19 @@ impl Editor {
                                 .unwrap_or(0);
                             stop_message = Some(format!("Debuggee exited (code {code})."));
                             should_stop = true;
+                        } else if event == "output" {
+                            let category = body
+                                .get("category")
+                                .and_then(Value::as_str)
+                                .unwrap_or("console");
+                            if category != "telemetry"
+                                && let Some(output) = body.get("output").and_then(Value::as_str)
+                                && !output.is_empty()
+                            {
+                                self.show_debug_terminal();
+                                self.debug_terminal
+                                    .feed_output(output, category == "stderr");
+                            }
                         }
                     }
                     debugger::DapMessage::Response {
@@ -872,7 +1019,13 @@ impl Editor {
                             self.update_message(&format!("DAP {command} failed: {detail}"));
                         }
                     }
-                    debugger::DapMessage::Request { .. } => {}
+                    debugger::DapMessage::Request {
+                        seq,
+                        command,
+                        arguments,
+                    } => {
+                        self.handle_dap_reverse_request(seq, &command, &arguments);
+                    }
                 },
                 debugger::DapEvent::Closed => should_stop = true,
                 debugger::DapEvent::Error(e) => self.update_message(&format!("DAP error: {e}")),
@@ -883,6 +1036,95 @@ impl Editor {
         } else if had_activity {
             self.status_bar.mark_redraw(true);
             self.debug_panel.update(&self.debug_state);
+            self.mark_debugger_sidebar_dirty();
+        }
+    }
+
+    fn handle_dap_reverse_request(&mut self, seq: u64, command: &str, arguments: &Value) {
+        if command != "runInTerminal" {
+            self.with_debug_session(|session| {
+                session
+                    .send_response(
+                        seq,
+                        command,
+                        false,
+                        &format!("Unsupported reverse request: {command}"),
+                        json!({}),
+                    )
+                    .map_err(|e| format!("DAP response error: {e}"))
+            });
+            return;
+        }
+
+        let args: Vec<String> = arguments
+            .get("args")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if args.is_empty() {
+            self.with_debug_session(|session| {
+                session
+                    .send_response(seq, command, false, "runInTerminal missing args", json!({}))
+                    .map_err(|e| format!("DAP response error: {e}"))
+            });
+            return;
+        }
+
+        let cwd = arguments
+            .get("cwd")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+
+        let mut env_overrides: Vec<(String, Option<String>)> = Vec::new();
+        if let Some(env_map) = arguments.get("env").and_then(Value::as_object) {
+            for (k, v) in env_map {
+                match v {
+                    Value::String(s) => env_overrides.push((k.clone(), Some(s.clone()))),
+                    Value::Null => env_overrides.push((k.clone(), None)),
+                    _ => {}
+                }
+            }
+        }
+
+        let sidebar_w = if self.sidebar_visible {
+            FileTree::WIDTH
+        } else {
+            0
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let cols = self.terminal_size.width.saturating_sub(sidebar_w).max(1) as u16;
+
+        self.show_debug_terminal();
+        match self.debug_terminal.start_command(
+            &args[0],
+            &args[1..],
+            cwd.as_deref(),
+            &env_overrides,
+            cols,
+        ) {
+            Ok(pid) => {
+                let body = pid.map_or_else(|| json!({}), |id| json!({ "processId": id }));
+                self.with_debug_session(|session| {
+                    session
+                        .send_response(seq, command, true, "", body.clone())
+                        .map_err(|e| format!("DAP response error: {e}"))
+                });
+            }
+            Err(e) => {
+                let msg = format!("runInTerminal spawn failed: {e}");
+                self.update_message(&msg);
+                self.with_debug_session(|session| {
+                    session
+                        .send_response(seq, command, false, &msg, json!({}))
+                        .map_err(|err| format!("DAP response error: {err}"))
+                });
+            }
         }
     }
 
@@ -1597,6 +1839,7 @@ impl Editor {
     fn continue_debug(&mut self) {
         self.debug_paused = false;
         self.view.set_debug_stop_line(None);
+        self.mark_debugger_sidebar_dirty();
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
         self.with_debug_session(|session| {
             session
@@ -1623,6 +1866,7 @@ impl Editor {
     fn restart_debug(&mut self) {
         self.debug_paused = false;
         self.view.set_debug_stop_line(None);
+        self.mark_debugger_sidebar_dirty();
         self.with_debug_session(|session| {
             session
                 .send_request("restart", json!({}))
@@ -1663,6 +1907,8 @@ impl Editor {
             self.debug_state.current_thread_id = Some(thread.id);
             self.request_stack_trace();
         }
+        self.debug_panel.update(&self.debug_state);
+        self.mark_debugger_sidebar_dirty();
     }
 
     fn select_next_frame(&mut self) {
@@ -1700,6 +1946,8 @@ impl Editor {
             if frame.id != 0 {
                 self.request_scopes(frame.id);
             }
+            self.debug_panel.update(&self.debug_state);
+            self.mark_debugger_sidebar_dirty();
             self.update_message(&format!("Selected frame #{next}: {}", frame.name));
         }
     }
@@ -1723,6 +1971,8 @@ impl Editor {
             .min(len.saturating_sub(1)) as isize;
         let next = (current + delta).rem_euclid(len as isize) as usize;
         self.debug_state.selected_variable_idx = next;
+        self.debug_panel.update(&self.debug_state);
+        self.mark_debugger_sidebar_dirty();
     }
 
     fn expand_selected_variable(&mut self) {
@@ -1744,6 +1994,8 @@ impl Editor {
         self.debug_state.variable_path.push(var.name.clone());
         self.debug_state.selected_variable_idx = 0;
         self.request_variables(var.variables_reference);
+        self.debug_panel.update(&self.debug_state);
+        self.mark_debugger_sidebar_dirty();
     }
 
     fn collapse_variable_scope(&mut self) {
@@ -1754,11 +2006,14 @@ impl Editor {
         self.debug_state.variable_path.pop();
         self.debug_state.selected_variable_idx = 0;
         self.request_variables(previous_ref);
+        self.debug_panel.update(&self.debug_state);
+        self.mark_debugger_sidebar_dirty();
     }
 
     fn step_over(&mut self) {
         self.debug_paused = false;
         self.view.set_debug_stop_line(None);
+        self.mark_debugger_sidebar_dirty();
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
         self.with_debug_session(|session| {
             session
@@ -1771,6 +2026,7 @@ impl Editor {
     fn step_into(&mut self) {
         self.debug_paused = false;
         self.view.set_debug_stop_line(None);
+        self.mark_debugger_sidebar_dirty();
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
         self.with_debug_session(|session| {
             session
@@ -1783,6 +2039,7 @@ impl Editor {
     fn step_out(&mut self) {
         self.debug_paused = false;
         self.view.set_debug_stop_line(None);
+        self.mark_debugger_sidebar_dirty();
         let thread_id = self.debug_state.current_thread_id.unwrap_or(0);
         self.with_debug_session(|session| {
             session
@@ -2121,6 +2378,7 @@ impl Editor {
         }
         self.command_bar.clear_value();
         self.prompt_type = prompt_type;
+        self.caret_dirty = true;
     }
 
     fn in_prompt(&self) -> bool {
@@ -2174,14 +2432,50 @@ impl Editor {
     // =========================================
     // Rendering
     // =========================================
+    fn layout_heights(&self) -> (usize, usize, usize) {
+        let term_rows = if self.terminal_visible {
+            self.active_terminal().rows
+        } else {
+            0
+        };
+        let debug_rows = if self.debug_state.active {
+            self.debug_panel.rows
+        } else {
+            0
+        };
+        let main_height = self
+            .terminal_size
+            .height
+            .saturating_sub(2)
+            .saturating_sub(term_rows)
+            .saturating_sub(debug_rows);
+        (main_height, debug_rows, term_rows)
+    }
+
+    fn has_component_redraw(&self) -> bool {
+        if self.terminal_size.height == 0 || self.terminal_size.width == 0 {
+            return false;
+        }
+        let bottom_dirty = if self.in_prompt() {
+            self.command_bar.needs_redraw()
+        } else {
+            self.message_bar.needs_redraw()
+        };
+        let status_dirty = self.terminal_size.height > 1 && self.status_bar.needs_redraw();
+        let (main_height, debug_rows, _) = self.layout_heights();
+        let main_dirty = main_height > 0
+            && (self.view.needs_redraw() || (self.sidebar_visible && self.sidebar.needs_redraw()));
+        let debug_dirty =
+            self.debug_state.active && debug_rows > 0 && self.debug_panel.needs_redraw();
+        let terminal_dirty = self.terminal_visible && self.active_terminal().needs_redraw();
+        bottom_dirty || status_dirty || main_dirty || debug_dirty || terminal_dirty
+    }
+
     fn needs_refresh(&self) -> bool {
-        self.view.needs_redraw()
-            || self.sidebar.needs_redraw()
-            || self.status_bar.needs_redraw()
-            || self.message_bar.needs_redraw()
-            || self.command_bar.needs_redraw()
-            || self.debug_panel.needs_redraw()
-            || (self.terminal_visible && self.terminal_pane.needs_redraw())
+        if self.terminal_size.height == 0 || self.terminal_size.width == 0 {
+            return false;
+        }
+        self.has_component_redraw() || self.caret_dirty || self.view.needs_caret_update()
     }
 
     pub fn refresh_status(&mut self) {
@@ -2208,21 +2502,7 @@ impl Editor {
 
     fn resize(&mut self, size: Size) {
         self.terminal_size = size;
-        let term_rows = if self.terminal_visible {
-            self.terminal_pane.rows
-        } else {
-            0
-        };
-        let debug_rows = if self.debug_state.active {
-            self.debug_panel.rows
-        } else {
-            0
-        };
-        let main_height = size
-            .height
-            .saturating_sub(2)
-            .saturating_sub(term_rows)
-            .saturating_sub(debug_rows);
+        let (main_height, debug_rows, term_rows) = self.layout_heights();
         let sidebar_w = if self.sidebar_visible {
             FileTree::WIDTH
         } else {
@@ -2244,13 +2524,21 @@ impl Editor {
             width: right_width,
         });
         self.debug_panel.set_col_offset(sidebar_w);
-        self.terminal_pane.size = Size {
+        let term_size = Size {
             height: term_rows,
             width: right_width,
         };
-        if self.terminal_visible && self.terminal_pane.is_running() {
+        self.terminal_pane.size = term_size;
+        self.debug_terminal.size = term_size;
+        if self.terminal_visible {
             #[allow(clippy::cast_possible_truncation)]
-            let _ = self.terminal_pane.resize_pty(right_width as u16);
+            let pty_cols = right_width.max(1) as u16;
+            if self.terminal_pane.is_running() {
+                let _ = self.terminal_pane.resize_pty(pty_cols);
+            }
+            if self.debug_terminal.is_running() {
+                let _ = self.debug_terminal.resize_pty(pty_cols);
+            }
         }
         let bar_size = Size {
             height: 1,
@@ -2259,6 +2547,7 @@ impl Editor {
         self.message_bar.resize(bar_size);
         self.status_bar.resize(bar_size);
         self.command_bar.resize(bar_size);
+        self.caret_dirty = true;
     }
 
     fn sync_view_breakpoints(&mut self) {
@@ -2275,65 +2564,14 @@ impl Editor {
         }
     }
 
-    fn refresh_screen(&mut self) {
-        if self.terminal_size.height == 0 || self.terminal_size.width == 0 {
-            return;
-        }
-        self.sync_view_breakpoints();
-        let _ = Terminal::begin_synchronized_update();
-        let bottom_bar_row = self.terminal_size.height.saturating_sub(1);
-        let _ = Terminal::hide_caret();
+    fn target_caret_position(
+        &self,
+        main_height: usize,
+        debug_rows: usize,
+        sidebar_w: usize,
+        bottom_bar_row: usize,
+    ) -> Option<Position> {
         if self.in_prompt() {
-            self.command_bar.render(bottom_bar_row);
-        } else {
-            self.message_bar.render(bottom_bar_row);
-        }
-        if self.terminal_size.height > 1 {
-            self.status_bar
-                .render(self.terminal_size.height.saturating_sub(2));
-        }
-        let term_rows = if self.terminal_visible {
-            self.terminal_pane.rows
-        } else {
-            0
-        };
-        let debug_rows = if self.debug_state.active {
-            self.debug_panel.rows
-        } else {
-            0
-        };
-        let main_height = self
-            .terminal_size
-            .height
-            .saturating_sub(2)
-            .saturating_sub(term_rows)
-            .saturating_sub(debug_rows);
-        if main_height > 0 {
-            if self.sidebar_visible {
-                if self.sidebar_mode == SidebarMode::Explorer {
-                    self.sidebar.render(0);
-                } else {
-                    self.render_debugger_sidebar(main_height + term_rows + debug_rows);
-                }
-            }
-            self.view.render(0);
-        }
-        let sidebar_w = if self.sidebar_visible {
-            FileTree::WIDTH
-        } else {
-            0
-        };
-        if self.debug_state.active && debug_rows > 0 {
-            self.debug_panel.render(main_height);
-        }
-        if self.terminal_visible {
-            let term_origin = main_height + debug_rows;
-            if self.terminal_pane.needs_redraw() {
-                let _ = self.terminal_pane.draw(term_origin, sidebar_w);
-            }
-        }
-
-        let new_caret_pos = if self.in_prompt() {
             Some(Position {
                 row: bottom_bar_row,
                 col: self.command_bar.caret_position_col(),
@@ -2345,24 +2583,104 @@ impl Editor {
                 Some(Position { row: 0, col: 0 })
             }
         } else if self.terminal_focus && self.terminal_visible {
-            if self.terminal_pane.viewing_history() {
+            let active = self.active_terminal();
+            if active.viewing_history() {
                 None
             } else {
-                Some(
-                    self.terminal_pane
-                        .cursor_position(main_height + debug_rows, sidebar_w),
-                )
+                Some(active.cursor_position(main_height + debug_rows, sidebar_w))
             }
         } else {
             Some(self.view.caret_position())
-        };
+        }
+    }
 
-        if let Some(new_caret_pos) = new_caret_pos {
-            let _ = Terminal::move_caret_to(new_caret_pos);
+    fn refresh_screen(&mut self) {
+        if self.terminal_size.height == 0 || self.terminal_size.width == 0 {
+            return;
+        }
+        self.sync_view_breakpoints();
+        let redraw_any = self.has_component_redraw();
+        let (main_height, debug_rows, term_rows) = self.layout_heights();
+        let sidebar_w = if self.sidebar_visible {
+            FileTree::WIDTH
+        } else {
+            0
+        };
+        let bottom_bar_row = self.terminal_size.height.saturating_sub(1);
+        let new_caret_pos =
+            self.target_caret_position(main_height, debug_rows, sidebar_w, bottom_bar_row);
+
+        if !redraw_any {
+            if let Some(pos) = new_caret_pos {
+                let _ = Terminal::move_caret_to(pos);
+                if !self.caret_visible {
+                    let _ = Terminal::show_caret();
+                    self.caret_visible = true;
+                }
+            } else if self.caret_visible {
+                let _ = Terminal::hide_caret();
+                self.caret_visible = false;
+            }
+            let _ = Terminal::execute();
+            self.caret_dirty = false;
+            self.view.mark_caret_dirty(false);
+            return;
+        }
+
+        let _ = Terminal::begin_synchronized_update();
+        let _ = Terminal::hide_caret();
+        if self.in_prompt() {
+            self.command_bar.render(bottom_bar_row);
+        } else {
+            self.message_bar.render(bottom_bar_row);
+        }
+        if self.terminal_size.height > 1 {
+            self.status_bar
+                .render(self.terminal_size.height.saturating_sub(2));
+        }
+        let mut sidebar_redrew = false;
+        if main_height > 0 {
+            if self.sidebar_visible {
+                if self.sidebar_mode == SidebarMode::Explorer {
+                    if self.sidebar.needs_redraw() {
+                        self.sidebar.render(0);
+                        sidebar_redrew = true;
+                    }
+                } else if self.sidebar.needs_redraw() {
+                    self.render_debugger_sidebar(main_height + term_rows + debug_rows);
+                    self.sidebar.mark_redraw(false);
+                    sidebar_redrew = true;
+                }
+            }
+            self.view.render(0);
+        }
+        if self.debug_state.active && debug_rows > 0 {
+            self.debug_panel.render(main_height);
+        }
+        if self.terminal_visible {
+            let term_origin = main_height + debug_rows;
+            if self.active_terminal().needs_redraw() {
+                let _ = self.active_terminal_mut().draw(term_origin, sidebar_w);
+            } else if sidebar_redrew && FileTree::WIDTH > 0 {
+                let _ = Terminal::move_caret_to(Position {
+                    row: term_origin,
+                    col: FileTree::WIDTH - 1,
+                });
+                let _ = Terminal::print("├");
+            }
+        }
+
+        if let Some(pos) = new_caret_pos {
+            let _ = Terminal::move_caret_to(pos);
             let _ = Terminal::show_caret();
+            self.caret_visible = true;
+        } else {
+            self.caret_visible = false;
         }
         let _ = Terminal::end_synchronized_update();
         let _ = Terminal::execute();
+        self.caret_dirty = false;
+        self.view.mark_caret_dirty(false);
     }
 
     // =========================================
@@ -2419,7 +2737,10 @@ impl Drop for Editor {
     fn drop(&mut self) {
         self.finish_debug_session(None);
         self.terminal_pane.stop();
-        let _ = Terminal::terminate();
+        self.debug_terminal.stop();
+        if self.restore_terminal {
+            let _ = Terminal::terminate();
+        }
     }
 }
 
@@ -2465,5 +2786,106 @@ fn key_event_to_bytes(code: crossterm::event::KeyCode, modifiers: KeyModifiers) 
         }
     } else {
         vec![]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_editor() -> Editor {
+        let mut editor = Editor {
+            should_quit: false,
+            view: View::default(),
+            status_bar: StatusBar::default(),
+            terminal_size: Size::default(),
+            message_bar: MessageBar::default(),
+            command_bar: CommandBar::default(),
+            prompt_type: PromptType::None,
+            replace_query: String::new(),
+            title: String::new(),
+            quit_times: 0,
+            sidebar: FileTree::new(PathBuf::from(".")),
+            sidebar_visible: false,
+            sidebar_focus: false,
+            sidebar_mode: SidebarMode::Explorer,
+            terminal_pane: TerminalPane::new(),
+            debug_terminal: TerminalPane::new_with_title("Debug I/O"),
+            terminal_mode: TerminalMode::Shell,
+            terminal_visible: false,
+            terminal_focus: false,
+            debug_panel: DebugPanel::new(),
+            debug_adapters: Vec::new(),
+            active_debug_adapter: None,
+            debug_session: None,
+            debug_state: DebugState::default(),
+            breakpoints: HashMap::new(),
+            pending_configuration_done: false,
+            debug_stack_after_threads: false,
+            stacktrace_retry_attempted: false,
+            verified_breakpoint_count: 0,
+            pending_continue_after_entry: false,
+            pending_launch_arguments: None,
+            debug_paused: false,
+            current_variables_reference: None,
+            variables_reference_stack: Vec::new(),
+            pending_discard: None,
+            caret_dirty: false,
+            caret_visible: true,
+            restore_terminal: false,
+        };
+        editor.resize(Size {
+            width: 80,
+            height: 24,
+        });
+        editor.view.mark_redraw(false);
+        editor.status_bar.mark_redraw(false);
+        editor.message_bar.mark_redraw(false);
+        editor.command_bar.mark_redraw(false);
+        editor.sidebar.mark_redraw(false);
+        editor.debug_panel.mark_redraw(false);
+        editor.caret_dirty = false;
+        editor
+    }
+
+    #[test]
+    fn hidden_components_do_not_trigger_needs_refresh() {
+        let mut editor = make_test_editor();
+        assert!(!editor.needs_refresh());
+
+        editor.command_bar.mark_redraw(true);
+        editor.debug_panel.mark_redraw(true);
+        editor.sidebar.mark_redraw(true);
+        assert!(!editor.has_component_redraw());
+        assert!(!editor.needs_refresh());
+
+        editor.prompt_type = PromptType::Search;
+        editor.command_bar.mark_redraw(false);
+        editor.message_bar.mark_redraw(true);
+        assert!(!editor.has_component_redraw());
+        assert!(!editor.needs_refresh());
+    }
+
+    #[test]
+    fn debugger_sidebar_redraw_flag_tracks_dirty_and_clean_state() {
+        let mut editor = make_test_editor();
+        editor.sidebar_visible = true;
+        editor.sidebar_mode = SidebarMode::Debugger;
+        editor.sidebar.mark_redraw(false);
+        assert!(!editor.has_component_redraw());
+
+        editor.sidebar.mark_redraw(true);
+        assert!(editor.has_component_redraw());
+
+        editor.sidebar.mark_redraw(false);
+        assert!(!editor.has_component_redraw());
+    }
+
+    #[test]
+    fn view_caret_dirty_triggers_refresh_without_component_redraw() {
+        let mut editor = make_test_editor();
+        editor.view.mark_caret_dirty(true);
+        assert!(!editor.has_component_redraw());
+        assert!(editor.needs_refresh());
     }
 }

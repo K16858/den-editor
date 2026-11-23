@@ -18,6 +18,10 @@ dap_adapter_type = "my-adapter"
 # - "tcp-server-dials-client": adapter connects to the client address we provide
 dap_transport = ""
 
+# When true with tcp-server-dials-client, launch the adapter inside the editor's
+# Debug I/O terminal so its stdin/stdout/stderr remain interactive.
+attach_adapter_stdio = false
+
 # Used only when dap_transport = "tcp-server-dials-client".
 # Omit this line (rather than repeating the default) to inherit the value
 # from a same-id default config; an explicit value here always wins.

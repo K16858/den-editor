@@ -10,6 +10,7 @@ pub struct VtParser {
     bg: Option<Color>,
     bold: bool,
     utf8: Utf8Accum,
+    pending_responses: Vec<Vec<u8>>,
 }
 
 #[derive(Default)]
@@ -81,6 +82,10 @@ impl VtParser {
         for &b in bytes {
             self.advance(b, buf);
         }
+    }
+
+    pub fn take_responses(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.pending_responses)
     }
 
     fn advance(&mut self, b: u8, buf: &mut ScrollbackBuffer) {
@@ -199,6 +204,18 @@ impl VtParser {
                 let n: u8 = raw.parse().unwrap_or(0);
                 buf.erase_in_line(n);
             }
+            b'n' => match raw.as_str() {
+                "6" => {
+                    let cur_row = buf.cursor_row().saturating_sub(buf.screen_origin()) + 1;
+                    let cur_col = buf.cursor_col() + 1;
+                    self.pending_responses
+                        .push(format!("\x1b[{cur_row};{cur_col}R").into_bytes());
+                }
+                "5" => {
+                    self.pending_responses.push(b"\x1b[0n".to_vec());
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -282,5 +299,28 @@ fn ansi_color(idx: u8, bright: bool) -> Color {
         (6, true) => Color::Cyan,
         (7, true) => Color::White,
         _ => Color::Reset,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::buffer::ScrollbackBuffer;
+    use super::VtParser;
+
+    #[test]
+    fn dsr_queries_emit_cursor_position_and_status_responses() {
+        let mut buf = ScrollbackBuffer::new();
+        buf.set_screen_size(40, 2);
+        let mut vt = VtParser::default();
+
+        vt.feed(b"\x1b[6n", &mut buf);
+        assert_eq!(vt.take_responses(), vec![b"\x1b[1;1R".to_vec()]);
+
+        vt.feed(b"1\r\n2\r\n3\x1b[6n", &mut buf);
+        assert_eq!(buf.screen_origin(), 1);
+        assert_eq!(vt.take_responses(), vec![b"\x1b[2;2R".to_vec()]);
+
+        vt.feed(b"\x1b[5n", &mut buf);
+        assert_eq!(vt.take_responses(), vec![b"\x1b[0n".to_vec()]);
     }
 }

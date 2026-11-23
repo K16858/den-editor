@@ -33,6 +33,6 @@ impl UIComponent for MessageBar {
 
     fn draw(&mut self, origin: usize) -> Result<(), Error> {
         let to_print = clip_display(&self.current_message, self.size.width);
-        Terminal::print_row(origin, 0, &to_print)
+        Terminal::print_row(origin, 0, self.size.width, &to_print)
     }
 }
