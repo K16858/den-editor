@@ -75,3 +75,42 @@ pub fn decode_envelope(buffer: &[u8]) -> Result<Option<(DapEnvelope, usize)>, se
         payload_start + content_length,
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn roundtrips_run_in_terminal_response() {
+        let msg = DapMessage::Response {
+            seq: 7,
+            request_seq: 3,
+            success: true,
+            command: "runInTerminal".to_string(),
+            message: String::new(),
+            body: json!({ "processId": 1234 }),
+        };
+        let encoded = encode_envelope(&msg).unwrap();
+        let (env, consumed) = decode_envelope(&encoded).unwrap().unwrap();
+        assert_eq!(consumed, encoded.len());
+        match env.message {
+            DapMessage::Response {
+                seq,
+                request_seq,
+                success,
+                command,
+                message,
+                body,
+            } => {
+                assert_eq!(seq, 7);
+                assert_eq!(request_seq, 3);
+                assert!(success);
+                assert_eq!(command, "runInTerminal");
+                assert!(message.is_empty());
+                assert_eq!(body["processId"], 1234);
+            }
+            other => panic!("expected response, got {other:?}"),
+        }
+    }
+}

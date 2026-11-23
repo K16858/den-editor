@@ -5,5 +5,5 @@ args = []
 file_extensions = ["rs"]
 dap_adapter_type = "codelldb"
 not_found_hint = "Rust debug adapter 'codelldb' is missing. Install VS Code CodeLLDB extension or add codelldb to PATH."
-launch_template = { name = "Debug current binary", type = "lldb", program = "${targetDebugBinary}" }
+launch_template = { name = "Debug current binary", type = "lldb", program = "${targetDebugBinary}", terminal = "integrated" }
 launch_overrides = { stopOnEntry = true }
