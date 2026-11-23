@@ -111,7 +111,7 @@ impl UIComponent for CommandBar {
             self.value.get_visible_graphemes(start..end)
         );
         let to_print = clip_display(&message, self.size.width);
-        Terminal::print_row(origin, 0, &to_print)
+        Terminal::print_row(origin, 0, self.size.width, &to_print)
     }
 }
 

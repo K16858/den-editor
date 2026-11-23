@@ -81,7 +81,7 @@ Samples are in `docs/examples/default/`.
 | Search / Replace        | Ctrl+F / Ctrl+H       |
 | Toggle sidebar          | Ctrl+B                |
 | Focus editor / terminal | Ctrl+1 / Ctrl+2       |
-| Toggle terminal         | Ctrl+@                |
+| Toggle terminal         | Ctrl+@ / Ctrl+`       |
 | New file / folder       | Ctrl+N / Ctrl+Shift+N |
 | Cancel                  | Esc                   |
 | Start / stop debug      | F5 / Shift+F5         |

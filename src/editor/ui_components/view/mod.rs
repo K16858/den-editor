@@ -49,6 +49,7 @@ fn is_closing_bracket(ch: char) -> bool {
 pub struct View {
     buffer: Buffer,
     needs_redraw: bool,
+    caret_dirty: bool,
     size: Size,
     /// Horizontal offset for main view rendering/clearing and caret position (e.g. sidebar width).
     col_offset: usize,
@@ -67,6 +68,14 @@ pub struct View {
 }
 
 impl View {
+    pub fn needs_caret_update(&self) -> bool {
+        self.caret_dirty
+    }
+
+    pub fn mark_caret_dirty(&mut self, value: bool) {
+        self.caret_dirty = value;
+    }
+
     pub fn set_col_offset(&mut self, col_offset: usize) {
         self.col_offset = col_offset;
         self.mark_redraw(true);
@@ -399,7 +408,7 @@ impl View {
     }
 
     fn render_line(&self, at: usize, line_text: &str) -> Result<(), Error> {
-        Terminal::print_row(at, self.col_offset, line_text)
+        Terminal::print_row(at, self.col_offset, self.size.width, line_text)
     }
 
     pub fn caret_position(&self) -> Position {
@@ -483,11 +492,13 @@ impl View {
         }
 
         self.scroll_text_location_into_view();
-        let moved = self.text_location != old_location
-            || self.scroll_offset.row != old_scroll_row
-            || self.scroll_offset.col != old_scroll_col;
-        if move_cmd.is_selection || moved {
+        let line_changed = self.text_location.line_idx != old_location.line_idx;
+        let scroll_changed =
+            self.scroll_offset.row != old_scroll_row || self.scroll_offset.col != old_scroll_col;
+        if move_cmd.is_selection || line_changed || scroll_changed {
             self.mark_redraw(true);
+        } else if self.text_location != old_location {
+            self.mark_caret_dirty(true);
         }
     }
 
@@ -1472,13 +1483,29 @@ mod tests {
     }
 
     #[test]
-    fn horizontal_move_marks_redraw() {
-        let mut view = View::default();
-        view.size = Size { width: 80, height: 24 };
-        view.buffer.lines = vec![Line::from("abc")];
+    fn horizontal_move_marks_caret_only_and_vertical_move_marks_redraw() {
+        let mut view = View {
+            size: Size {
+                width: 80,
+                height: 24,
+            },
+            ..Default::default()
+        };
+        view.buffer.lines = vec![Line::from("abc"), Line::from("def")];
         view.mark_redraw(false);
+        view.mark_caret_dirty(false);
+
         view.handle_move_command(Move::right(false));
         assert_eq!(view.text_location.grapheme_idx, 1);
+        assert!(!view.needs_redraw());
+        assert!(view.needs_caret_update());
+
+        view.mark_caret_dirty(false);
+        view.handle_move_command(Move {
+            direction: MoveDirection::Down,
+            is_selection: false,
+        });
+        assert_eq!(view.text_location.line_idx, 1);
         assert!(view.needs_redraw());
     }
 

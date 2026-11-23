@@ -113,7 +113,7 @@ impl UIComponent for DebugPanel {
             } else {
                 text.chars().take(self.size.width).collect()
             };
-            Terminal::print_row(origin_row + row, self.col_offset, &line)?;
+            Terminal::print_row(origin_row + row, self.col_offset, self.size.width, &line)?;
         }
         Ok(())
     }
