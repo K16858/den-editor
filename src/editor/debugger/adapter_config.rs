@@ -263,9 +263,9 @@ mod tests {
 
         let mips = configs.iter().find(|cfg| cfg.id == "pluspim").unwrap();
         assert_eq!(mips.file_extensions, ["asm"]);
-        assert_eq!(mips.args, ["--debug", "${file}"]);
+        assert_eq!(mips.args, ["debug"]);
         assert_eq!(mips.dap_transport, "tcp-server-dials-client");
-        assert_eq!(mips.client_addr_arg(), "--connect");
+        assert_eq!(mips.client_addr_arg(), "connect");
         assert_eq!(mips.health_check_args(), ["--help"]);
         assert!(mips.attach_adapter_stdio());
 
