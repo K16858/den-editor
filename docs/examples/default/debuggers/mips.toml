@@ -9,4 +9,4 @@ client_addr_arg = "connect"
 health_check_args = ["--help"]
 attach_adapter_stdio = true
 not_found_hint = "MIPS debug adapter 'pluspim' is missing. Install it from https://github.com/hinshiba/PlusPim and add it to PATH."
-launch_overrides = { stopOnEntry = true }
+launch_overrides = { stopOnEntry = true, program = ["${file}", "${workspace}/kseg.asm"] }
